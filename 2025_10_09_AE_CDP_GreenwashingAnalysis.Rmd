@@ -1,5 +1,5 @@
 ---
-title: "Greenwashing Analysis"
+title: "CDP Comp Tru BERT Merge"
 author: "Aldís Elfarsdóttir"
 date: "Oct 9, 2025"
 output:
