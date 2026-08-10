@@ -3,4 +3,22 @@
 
 The Python script documents the extracts performed to collect key BERT variables from the scaled-up CDP translation, merge, and preprocessing performed by Chase Hikida. 
 
-Thesis citation: 
+## Citation
+
+If you use this code or methodology, please cite:
+
+> Elfarsdottir, A. ([2026]). _Corporate Carbon Credibility: Detecting Signals of Credibility in Corporate Carbon Reports using Natural Language Processing_ (Doctoral dissertation). Stanford University. [URL coming soon]
+
+BibTeX:
+```bibtex
+@phdthesis{elfarsdottir[year],
+  author = {Elfarsdottir, Aldis},
+  title  = {[Corporate Carbon Credibility: Detecting Signals of Credibility in Corporate Carbon Reports using Natural Language Processing]},
+  school = {[Stanford University]},
+  year   = {[2026]},
+  type   = {PhD dissertation},
+  url    = {[URL available soon]}
+}
+```
+
+Portions of the CDP merge, translation, and ClimateBERT preprocessing pipeline were developed by Chase Hikida and are used with permission; see `CH-cdp-bert-pipeline.zip` for that codebase, from `ChaseHikida/mse`.
