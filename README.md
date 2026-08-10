@@ -21,4 +21,4 @@ BibTeX:
 }
 ```
 
-The scaled-up CDP merge, translation, and ClimateBERT preprocessing pipeline was developed by Chase Hikida and are used with permission; see `CH-cdp-bert-pipeline.zip` for that portion of the codebase, from `ChaseHikida/mse`.
+The scaled-up CDP merge, translation, and ClimateBERT preprocessing pipeline was developed by research assistant, Chase Hikida, and are used with permission; see `CH-cdp-bert-pipeline.zip` for that portion of the codebase, from `ChaseHikida/mse`.
