@@ -1,0 +1,3273 @@
+---
+title: "Greenwashing Analysis"
+author: "Aldís Elfarsdóttir"
+date: "Oct 9, 2025"
+output:
+  pdf_document: default
+  word_document: default
+always_allow_html: yes
+---
+
+# SETWD
+```{r}
+setwd("~/Documents/Stanford/PhD/Greenwashing/working_dir/")
+```
+
+# LIBRARIES
+
+```{r, message=FALSE, warning=FALSE}
+
+# code libraries
+library(data.table)
+library(dplyr)
+library(ggplot2)
+library(tibble)
+library(tidyverse)
+library(readxl)
+library(class)
+library(GGally)
+library(ggplot2)
+library(tibble)
+library(stringr)
+library(cvTools)
+library(xtable)     # export to LaTex
+library(openxlsx)
+library(stringi)
+library(maps)
+library(geosphere)
+library(reshape2)   # for melting but just use data.table
+library(DescTools)  # qdapTools - mtabulate
+library(crosstable) 
+library(stringr)    # sort files by last digit in name
+library(naniar)     # visualize missingness
+library(gsubfn)     # for strapplyc finding digits in a cell
+library(corrplot)   # for correlation plots
+library(Hmisc)      # r correlations, maybe don't need
+library(gridExtra)  # xtable r correlations with significance
+library(stargazer)  # pretty R regression output
+library(fixest)     # feols, fixed effects OLS
+library(plm)
+library(survival)   # for clogit
+library(mlogit)     # nnet() function for multinomial logistic regression
+library(qdapTools)  # mtabulate
+library(texreg)
+library(naniar)     # visualize missingness
+library(visdat)     # visualize missingness
+library(VGAM)       # don't install it in with compilation!
+rstudioapi::writeRStudioPreference("data_viewer_max_columns", 500L) # changes to 910L later for 910 columns
+#library(arrow)
+```
+
+
+# Quick Restart Import
+```{r}
+
+## Other datasets:
+# CAPIQ
+# COMPUSTAT Trucost
+# D&B - does this have info on private companies?
+# ESG Manager
+# Enverus
+
+# WRDS
+# crsp_test <- read.csv("raw_data/crsp_test_market_cap_3758.csv") # 12534 obs 
+# company_tickers <- read.csv("preprocessed_data/company_tickers.csv") # found 204 initially... now 665! yay!
+# compustat <- read_csv("raw_data/compustat_gvkey.csv")
+# trucost <- read_csv("raw_data/trucost_environmental.csv")
+# trucost <- trucost[!is.na(trucost$gvkey),]
+compustat_v2_comp_whole <- read_csv("compustat_v2_whole_comp_database.csv")
+colnames(compustat_v2_comp_whole) <- paste0("comp_", gsub(" ", "_", colnames(compustat_v2_comp_whole)))
+trucost_v2_tru_whole <- read_csv("trucost_v2_tru_whole.csv")
+colnames(trucost_v2_tru_whole) <- paste0("tru_", gsub(" ", "_", colnames(trucost_v2_tru_whole)))
+
+# CDP
+cdp <- read.csv("preprocessed_data/cdp_v2.csv", check.names = FALSE)[,-1]
+cdp_summaries <- read_csv("preprocessed_data/cdp_summaries_v2.csv") # are there more isins in the sheets themselves?
+cdp_targets <- read_csv("preprocessed_data/cdp_targets_v2.csv") # use v2 cleaned 10/9 (in that I aggregated by year, account no, not year, account, name)
+cdp_emissions <- read_csv("preprocessed_data/cdp_emissions_v2.csv") # use v2 cleaned 10/9/25
+cdp_verification <- read_csv("preprocessed_data/cdp_verification.csv") # this came from cleaning up the cdp_emissions 10/9/25
+#cdp <- read_csv("preprocessed_data/cdp.csv")[,-1] # remerge from summaries, etc.
+
+# something got wrong w amended date
+cdp_comp_tru <- read_csv("preprocessed_data/cdp_comp_tru.csv", col_types = cols(
+  cdp_amended_date = col_character()
+)) 
+
+# intermediate merges
+id_by_account_yr <- read_csv("preprocessed_data/cdp_comp_isin_namematch_gvkey.csv")
+cdp_w_gvkey <- read_csv("preprocessed_data/cdp_w_gvkey.csv", col_types = cols(
+  cdp_amended_date = col_character()
+)) 
+cdp_comp_names <- read_csv("preprocessed_data/cdp_comp_names")
+cdp_tru_names <- read_csv("preprocessed_data/cdp_tru_names.csv")
+
+# BERT set from python -- modify the base_KPI_labels_v3 here for cdp_year and colnames to have traceability
+base_KPI_labels_v3 <- read_csv("preprocessed_data/base_KPIs_labels_v3.csv")
+base_KPI_labels_v3$cdp_year <- base_KPI_labels_v3$year - 1
+colnames(base_KPI_labels_v3) <- paste0("bert_", gsub(" ", "_", colnames(base_KPI_labels_v3)))
+write.csv(base_KPI_labels_v3, "preprocessed_data/base_KPIs_labels_v3_cdpyear.csv", row.names=FALSE)
+
+
+```
+
+# YAY FUNCTIONS!
+```{r}
+
+# THANK YOU GPT3.5
+# > # Remove the data frames
+# > for (df_name in (objects[grep("^cdp_esg", objects)])) {
+# +     rm(list = df_name)
+# + }
+
+# aiplayground.stanford.edu gpt
+safe_to_string <- function(x) {
+  if (all(is.na(x))) {
+    return(NA)
+  } else if (any(!is.na(x))) {
+    # Strip NAs, get unique non-NA values, collapse to string
+    vals <- unique(x[!is.na(x)])
+    return(toString(vals))
+  } else {
+    return(NA)
+  }
+}
+
+# first change NA's to something else... like "Not Answered"
+# thank you gpt4.o
+clean_na <- function(x) {
+  x <- as.character(x)
+  # Replace "NA, " and " , NA"
+  x <- gsub("NA, ", "Not Answered, ", x)
+  x <- gsub(", NA", ", Not Answered", x)
+  # Optionally, remove any leading or trailing commas or spaces
+  x <- trimws(gsub("^, |, $", "", x))
+  return(x)
+}
+
+# thank you GPT4
+# Function to preprocess company names
+preprocess_names <- function(names) {
+  names <- gsub(" ", "", names)      # Remove spaces
+  names <- tolower(names)            # Convert to lowercase
+  names <- gsub("[^a-z]", "", names) # Keep only letters -- what about 3igroup? or 1-800-flowersdotcom?
+  return(names)
+}
+
+# reorder columns to all be same order
+reorder_cols <- function(df, ref_df) {
+  column_names <- names(ref_df)
+  df <- df[,column_names]
+  return(df)
+}
+
+pretty_latex_table <- function(model) {
+  # THANK YOU GPT4 - and sorting by estimates + std err upper bound
+  model_summary <- summary(model)
+  
+  # Extract coefficients and standard errors
+  coefs <- model_summary$coefficients[, "Estimate"]
+  std_errs <- model_summary$coefficients[, "Std. Error"]
+  pvals <- model_summary$coefficients[, "Pr(>|t|)"]
+  tvals <- model_summary$coefficients[, "t value"]
+  upper_bound <- coefs + std_errs
+  lower_bound <- coefs - std_errs
+  
+  # Extract p-values and coefficients
+  pvals <- model_summary$coefficients[, "Pr(>|t|)"]
+  coefs <- model_summary$coefficients[, "Estimate"]
+  
+  lm_summary_results <- data.frame(
+    Coefficients = round(coefs, 2),
+    Std_Error = round(std_errs, 2),
+    Upper_Bound = upper_bound,
+    Lower_Bound = lower_bound,
+    Tvals = round(tvals,2),
+    Pvals = pvals
+  )
+  
+  # Sorting by Upper Bound in descending order
+  lm_summary_results_sorted <- lm_summary_results[order(-lm_summary_results$Upper_Bound, lm_summary_results$Pvals), ]
+  
+  # Assign stars based on p-values
+  stars <- ifelse(lm_summary_results_sorted$Pvals < 0.001, "***", 
+                  ifelse(lm_summary_results_sorted$Pvals < 0.01, "**", 
+                         ifelse(lm_summary_results_sorted$Pvals < 0.05, "*", 
+                                ifelse(lm_summary_results_sorted$Pvals < 0.1, ".", ""))))
+  
+  # Combine coefficients with stars
+  pvals_starred <- paste0(format(lm_summary_results_sorted$Pvals, digits = 3), "\t", stars)
+  
+  lm_summary_results_sorted$Pvals <- pvals_starred
+  
+  # Create xtable from the sorted results
+  xtable_model_sorted <- xtable(lm_summary_results_sorted)
+  
+  # Print the xtable in LaTeX format
+  print(xtable_model_sorted, type = "latex", comment = FALSE)
+  
+}
+
+add_stars <- function(model) {
+  # THANK YOU GPT4 - and sorting by estimates + std err upper bound
+  model_summary <- summary(model)
+  
+  # Extract coefficients and standard errors
+  coefs <- model_summary$coefficients[, "Estimate"]
+  std_errs <- model_summary$coefficients[, "Std. Error"]
+  pvals <- model_summary$coefficients[, "Pr(>|t|)"]
+  tvals <- model_summary$coefficients[, "t value"]
+  upper_bound <- coefs + std_errs
+  lower_bound <- coefs - std_errs
+  
+  # Extract p-values and coefficients
+  pvals <- model_summary$coefficients[, "Pr(>|t|)"]
+  coefs <- model_summary$coefficients[, "Estimate"]
+  
+  lm_summary_results <- data.frame(
+    Coefficients = round(coefs, 2),
+    Std_Error = round(std_errs, 2),
+    Upper_Bound = upper_bound,
+    Lower_Bound = lower_bound,
+    Tvals = round(tvals,2),
+    Pvals = pvals
+  )
+  
+  # # Sorting by Upper Bound in descending order
+  # lm_summary_results_sorted <- lm_summary_results[order(-lm_summary_results$Upper_Bound, lm_summary_results$Pvals), ]
+  # 
+  
+  # Assign stars based on p-values
+  stars <- ifelse(lm_summary_results$Pvals < 0.001, "***", 
+                  ifelse(lm_summary_results$Pvals < 0.01, "**", 
+                         ifelse(lm_summary_results$Pvals < 0.05, "*", 
+                                ifelse(lm_summary_results$Pvals < 0.1, ".", ""))))
+  
+  # Combine coefficients with stars
+  pvals_starred <- paste0(format(lm_summary_results$Pvals, digits = 3), "\t", stars)
+  
+  lm_summary_results$Pvals <- pvals_starred
+  
+  # Create xtable from the sorted results
+  xtable_model <- xtable(lm_summary_results)
+  
+  # Print the xtable in LaTeX format
+  print(xtable_model, type = "latex", comment = FALSE)
+  
+}
+
+# xtable(predict_na, sanitize.text.function = function(x) xtable::sanitize.text.function(x, use.latex = TRUE)) # from GPT3.5 the "sanitize" functionality
+
+#http://www.sthda.com/english/wiki/elegant-correlation-table-using-xtable-r-package 
+corstars <-function(x, method=c("pearson", "spearman"), removeTriangle=c("upper", "lower"), result=c("none", "html", "latex")){
+    #Compute correlation matrix
+    require(Hmisc)
+    x <- as.matrix(x)
+    correlation_matrix<-rcorr(x, type=method[1])
+    R <- correlation_matrix$r # Matrix of correlation coeficients
+    p <- correlation_matrix$P # Matrix of p-value 
+    
+    ## Define notions for significance levels; spacing is important.
+    mystars <- ifelse(p < .0001, "****", ifelse(p < .001, "*** ", ifelse(p < .01, "**  ", ifelse(p < .05, "*   ", "    "))))
+    
+    ## trunctuate the correlation matrix to two decimal
+    R <- format(round(cbind(rep(-1.11, ncol(x)), R), 2))[,-1]
+    
+    ## build a new matrix that includes the correlations with their apropriate stars
+    Rnew <- matrix(paste(R, mystars, sep=""), ncol=ncol(x))
+    diag(Rnew) <- paste(diag(R), " ", sep="")
+    rownames(Rnew) <- colnames(x)
+    colnames(Rnew) <- paste(colnames(x), "", sep="")
+    
+    ## remove upper triangle of correlation matrix
+    if(removeTriangle[1]=="upper"){
+      Rnew <- as.matrix(Rnew)
+      Rnew[upper.tri(Rnew, diag = TRUE)] <- ""
+      Rnew <- as.data.frame(Rnew)
+    }
+    
+    ## remove lower triangle of correlation matrix
+    else if(removeTriangle[1]=="lower"){
+      Rnew <- as.matrix(Rnew)
+      Rnew[lower.tri(Rnew, diag = TRUE)] <- ""
+      Rnew <- as.data.frame(Rnew)
+    }
+    
+    ## remove last column and return the correlation matrix
+    Rnew <- cbind(Rnew[1:length(Rnew)-1])
+    if (result[1]=="none") return(Rnew)
+    else{
+      if(result[1]=="html") print(xtable(Rnew), type="html")
+      else print(xtable(Rnew), type="latex") 
+    }
+} 
+
+
+# func to read and process cdp files
+
+# THANK YOU GPT3.5
+# Function to read a file, add a year column, and return the data frame
+read_and_process_file <- function(file) {
+  
+  # Read the file
+  data <- read_csv(file.path(folder_path, file), col_types = cols(.default = "c", col1 = "skip"), show_col_types = FALSE)  # problems parsing "Investor CDP 2015_Public Data_sheet35_CC8.1.csv", "Investor CDP 2012_Public Data_sheet38_8.4a (2).csv"
+  data <- data[,-1]
+  
+  # Extract the year from the filename
+  year <- as.numeric(gsub("\\D", "", str_extract(file, "\\d{4}")))
+  # Add a year column
+  data <- mutate(data, year = year)
+  data <- mutate(data, filename = file)
+  colnames(data) <- tolower(colnames(data))
+  return(data)
+}
+
+
+# Function to clean names
+
+#c("filename", "year", "ticker", "isin", "primary expansion", "secondary expansions", "account number", "account no", "account no.", "name", "organisation", "organization", "country", "primary industry", "primary activity", "industry group", "public", "access", "authority types", "primary_activity", "primary sector", "primary questionnaire sector", "active_target", "absolute_target_scope", "intensity_target_scope", "science_based_intensity_target", "science_based_absolute_target", "absolute_target_comment", "intensity_target_comment", "reduction_initiatives", "initiative_type", "initiative_details", "payback_period", "why_no_target", "why_no_initiatives", "attachments", "change_%", "change_detail", "change_mtco2e", "complexity", "excluded_reason", "excluded_sources", "scope1", "scope2", "scope2_loc", "scope2_market")]
+
+# THANK YOU GPT4o
+clean_and_coalesce <- function(dset) {
+  
+  # Standardize column names: remove dots, convert to lowercase
+  names(dset) <- gsub("\\.", "", tolower(names(dset)))
+  
+  # Rename columns based on common patterns
+  rename_patterns <- list(
+    "^ticker$" = "ticker",
+    "^isin$" = "isin",
+    "^account number$" = "account no",
+    "^organization$" = "name",
+    "^access$" = "public"
+  )
+  
+  for (pattern in names(rename_patterns)) {
+    if (sum(grepl(pattern, names(dset))) > 0) {
+      names(dset)[grep(pattern, names(dset))] <- rename_patterns[[pattern]]
+    }
+  }
+  
+  # Handle duplicate column names by appending an index to duplicates
+  duplicated_cols <- names(dset)[duplicated(names(dset))]
+  for (dup in duplicated_cols) {
+    col_indices <- which(names(dset) == dup)
+    names(dset)[col_indices] <- paste0(dup, "_", seq_along(col_indices))
+  }
+  
+  # Coalesce columns that were originally duplicates
+  for (dup in unique(duplicated_cols)) {
+    cols_to_merge <- dset %>% select(starts_with(dup))
+    
+    # Apply coalesce across the duplicate columns
+    dset[[dup]] <- do.call(coalesce, cols_to_merge)
+    
+    # Drop the individual duplicate columns (keep only the coalesced one)
+    dset <- dset %>% select(-starts_with(paste0(dup, "_")))
+  }
+  
+  return(dset)
+}
+
+
+# Func rename texrows
+# THANK YOU GPT4o
+rename_texrows <- function(file_path) {
+  # Step 1: Read the .tex file
+  tex_lines <- readLines(file_path)
+  
+  # Step 2: Perform text replacements
+  # Define your replacements as a named vector
+  # Corrected replacements vector without double backslashes
+  replacements <- c(
+    "status\\\\_col" = "CDP Participation This Year",
+    "specific" = "Specific This Year",
+    "scope1\\\\_reported" = "CDP Scope 1 Reported This Year",
+    "scale\\(scope1\\\\_reported\\)" = "CDP Scope 1 Reported This Year",
+    "scale\\(scope1\\\\_filled\\)" = "CDP Scope 1 (mtCO2e)",
+    "scale\\(esg\\\\_ias\\\\_filled\\)" = "ESG Industry-Adjusted Score",
+    "scale\\(sum\\\\_release\\)" = "Toxic Releases",
+    "scale\\(sum\\\\_transfer\\)" = "Toxic Transfers",
+    "scale\\(sum\\\\_one\\\\_time\\\\_release\\)" = "Toxic One-Time Releases",
+    "scale\\(as.numeric\\(at\\)\\)" = "Total Assets",
+    "scale\\(as.numeric\\(capx\\)\\)" = "Capital Expenditure",
+    "scale\\(as.numeric\\(cogs\\)\\)" = "Cost of Goods Sold",
+    "scale\\(as.numeric\\(emp\\)\\)" = "Employees",
+    "scale\\(as.numeric\\(lct\\)\\)" = "Current Liabilities",
+    "scale\\(as.numeric\\(revt\\)\\)" = "Revenue",
+    "scale\\(as.numeric\\(xopr\\)\\)" = "Operating Expense",
+    "scale\\(as.numeric\\(cshoi\\)\\)" = "Common Shares Outstanding - Issue",
+    "scale\\(as.numeric\\(cshpria\\)\\)" = "Common Shares Outstanding",
+    "scale\\(as.numeric\\(epsincon\\)\\)" = "Earnings Per Share Incl Extra Items",
+    "scale\\(as.numeric\\(epsexcon\\)\\)" = "Earnings Per Share Excl Extra Items",
+    "scale\\(as.numeric\\(nicon\\)\\)" = "Net Income Consolidated",
+    "factor\\(year\\)" = "Year ",
+    "factor\\(Industry\\\\_Group\\)" = "Industry Group ",
+    "factor\\(region\\)" = "Region "
+  )
+  
+  # Step 3: Combine lines into a single string (for easier manipulation)
+  tex_content <- paste(tex_lines, collapse = "\n")
+  
+  # Step 4: Perform text replacements using stringr::str_replace_all
+  for (pattern in names(replacements)) {
+    replacement <- replacements[[pattern]]
+    tex_content <- gsub(pattern, replacement, tex_content, perl = TRUE)
+  }
+  
+  # Step 5: Split the content back into lines
+  tex_lines <- str_split(tex_content, "\n")[[1]]
+  
+  # Step 6: Write the modified content back to a .tex file
+  output_file_path <- file_path
+  writeLines(tex_lines, output_file_path)
+  
+}
+# usage
+# rename_texrows("report/report_tables/logit_models_participation_complex_0sESG_JUNE_2010-2013ESG_esg_ratings_pkl.tex")
+# rename_texrows("report/report_tables/logit_models_specificity_complex_0sESG_JUNE_2010-2013ESG_esg_ratings_pkl.tex")
+```
+
+
+# CDP summaries = cdp_df gives rough sense of which companies disclosed in answer to which questions (and if they amended their response) - 9/12/23-9/13
+```{r}
+
+# does the summary sheet of companies give a list of organizations that answered any 1+ question?
+# assuming it does, load each one here
+
+summary_sheets <- grep(dir("preprocessed_data/cdp_data_sheets"), pattern = "sheet1_Summary*", value = TRUE)
+
+filenames <- summary_sheets #subset$investor_files # TRY WITH A SUBSET FIRST!
+
+# # I ran a simpler version of import_cdp first to see what the overlapping/unique column names are
+columns <- c("account no", "name", "country", "status", "region", "public", "samples", "submitted date", "activities", "sectors", "industries", "primary activity", "primary sector", "primary industry", "primary questionnaire sector", "primary ticker", "primary isin", "bbid", "isin", "ticker", "filename", "discloser id", "primary expansion", "secondary expansions", "complexity", "documents", "version", "ammended date", "program_name", "project_year", "authority types", "minimum tier")
+
+cdp_dfs <- list()
+
+# x <- filenames[7] # FOR TESTING 
+import_cdp <- function(x) {
+  cdp <- read_csv(sprintf("preprocessed_data/cdp_data_sheets/%s",x), col_names=TRUE, na = c("NA"," ","Question not applicable"),
+                  show_col_types = FALSE)
+  
+  # date format
+  # dates <- cdp[,which(grepl("ammended date",tolower(names(cdp))))] # as.Date(, , origin = "1899-12-30") 
+  # https://stackoverflow.com/questions/43230470/how-to-convert-excel-date-format-to-proper-date-in-r
+  # names(dates) <- names(df)[which(grepl("date",tolower(names(df))))]
+  
+  format <- data.frame(matrix(nrow=nrow(cdp), ncol = length(columns)))
+  colnames(format) <- columns
+  
+  # make column names lower case and delete periods
+  names(cdp) <- gsub("\\.","",tolower(names(cdp)))
+  
+  if(sum(grepl("organization",names(cdp))) > 0) {
+    names(cdp)[grep("organization",names(cdp))] <- "name"
+  }
+  if(sum(grepl("organisation",names(cdp))) > 0) {
+    names(cdp)[grep("organisation",names(cdp))] <- "name"
+  }
+  if(sum(grepl("company name",names(cdp))) > 0) {
+    names(cdp)[grep("company name",names(cdp))] <- "name"
+  }
+  if(sum(grepl("account_name",names(cdp))) > 0) {
+    names(cdp)[grep("account_name",names(cdp))] <- "name"
+  }
+  
+  if(sum(grepl("account no",names(cdp))) > 0) {
+    names(cdp)[grep("account no",names(cdp))] <- "account no"
+  }
+  if(sum(grepl("account number",names(cdp))) > 0) {
+    names(cdp)[grep("account number",names(cdp))] <- "account no"
+  }
+  if(sum(grepl("account_id",names(cdp))) > 0) {
+    names(cdp)[grep("account_id",names(cdp))] <- "account no"
+  }
+  
+  if(sum(grepl("secondary_expansion",names(cdp))) > 0) {
+    names(cdp)[grep("secondary_expansion",names(cdp))] <- "secondary expansions"
+  }
+  if(sum(grepl("incorporated_country",names(cdp))) > 0) {
+    names(cdp)[grep("incorporated_country",names(cdp))] <- "country"
+  }
+  
+  if(sum(grepl("submitted_date",names(cdp))) > 0) {
+    names(cdp)[grep("submitted_date",names(cdp))] <- "submitted date"
+  }
+  if(sum(grepl("response_received_date",names(cdp))) > 0) {
+    names(cdp)[grep("response_received_date",names(cdp))] <- "submitted date"
+  }
+  if(sum(grepl("response received date",names(cdp))) > 0) {
+    names(cdp)[grep("response received date",names(cdp))] <- "submitted date"
+  }
+  
+  if(sum(grepl("response_status",names(cdp))) > 0) {
+    names(cdp)[grep("response_status",names(cdp))] <- "status"
+  }
+  if(sum(grepl("invitation status",names(cdp))) > 0) {
+    names(cdp)[grep("invitation status",names(cdp))] <- "status"
+  }
+  
+  if(sum(grepl("^ticker$",names(cdp))) > 0) {
+    names(cdp)[grep("^ticker$",names(cdp))] <- "ticker"
+  }
+  if(sum(grepl("^isin$",names(cdp))) > 0) {
+    names(cdp)[grep("^isin$",names(cdp))] <- "isin"
+  }
+  if(sum(grepl("^access$",names(cdp))) > 0) {
+    names(cdp)[grep("^access$",names(cdp))] <- "public"
+  }
+  
+  if(sum(grepl("^gri$",names(cdp))) > 0) {
+    names(cdp)[grep("^gri$",names(cdp))] <- "primary industry" # this applies to 2017 aerospace and defense responses
+  }
+  if(sum(grepl("^industry group$",names(cdp))) > 0) {
+    names(cdp)[grep("^industry group$",names(cdp))] <- "primary industry" # this applies to 2017 aerospace and defense responses and 2010 "IPPs"
+  }
+
+  for (colname in colnames(format)[colnames(format) %in% colnames(cdp)]) {
+    format[,colname] <- cdp[,colname]
+    if (sum(grepl("ammended date",colname)) > 0) {
+      format[,colname] <- cdp[,colname]
+      print(x)
+      print(colname)
+      #print(class(cdp[,colname]))
+      print(format[,colname][!is.na(format[,colname])])
+    }
+  }
+  
+  # add organization name to the list
+  return(format)
+  # return(cdp) # for colnames
+}
+
+for (n in 1:length(filenames)) {
+  cdp <- import_cdp(filenames[n]) 
+  cdp[,"filename"] <- filenames[n]
+  cdp_dfs[[n]] <- cdp
+}
+cdp_df <- do.call("rbind", cdp_dfs)
+cdp_df[,"ammended date"] <- as.POSIXct(cdp_df$`ammended date`, format = "%Y-%m-%d", origin = "1970-01-01", tz = "UTC") # converted & verified w original dataset
+cdp_df <- cdp_df %>% mutate(year = str_extract(`filename`,"\\d+"))
+colnames(cdp_df)[!colnames(cdp_df) %in% c("account no", "year")] <- paste0("cdp_", gsub(" ", "_", colnames(cdp_df)[!colnames(cdp_df) %in% c("account no", "year")]))
+
+write.csv(cdp_df, "preprocessed_data/cdp_summaries_v2.csv", row.names=FALSE)
+cdp_summaries <- read_csv("preprocessed_data/cdp_summaries_v2.csv") 
+rm(cdp_df)
+rm(cdp_dfs)
+
+```
+
+Problems already: missing regions, inconsistent summary columns over time. 
+
+
+# CDP targets = cdp_targets absolute vs. intensity target and why no target... 
+```{r}
+# REWRITING THIS MORE CLEANLY WITH THE COLUMN NAME OPTION
+# THANK YOU GPT3.5 
+folder_path <- "preprocessed_data/cdp_data_sheets/"
+
+# HOW I DID IT THE FIRST TIME: OPEN PDF QUESTIONNAIRES AND CTRL F "TARGET" etc. "REDUCTION INITIATIVES" "DESCRIBE ACTIVITIES" etc.
+filenames <- list.files(folder_path)
+pattern <- "2020.*C4|2019.*C4|2018.*C4|2017.*CC3|2016.*CC3|2015.*CC3|2014.*CC3|2013.*3|2012.*3|2011.*3|2010.*9|2010.*Strategy"
+matching_files <- grep(pattern, filenames, value = TRUE, ignore.case = TRUE)
+filelist_targets <- unique(c(matching_files[c(1:8, 20:24, 44, 47, 52, 57, 73:77, 119, 121, 128, 132, 135,146, 153, 191, 194, 197, 199, 203, 214, 221,229, 237, 277:320, 324:332,337:341,346:349,352:355,381:386,388,390:396,421:427,431:432,434:440,462:467,471:534,537:546)], 
+                      "Supply Chain CDP CC 2020_Public Data_sheet24_C4 - Targets and Performance.csv", 
+                      "Investor CDP 2020_Public Data_sheet24_C4 - Targets and Performance.csv", 
+                      "2019_ClimateChange_Inv_SC_Public_Tabbed_sheet24_C4 - Targets and Performance.csv", 
+                      "Supply Chain CDP CC 2018_Public Data_sheet24_C4 - Targets and Performance.csv", 
+                      "Investor CDP 2018_Public Data_sheet24_C4 - Targets and Performance.csv", 
+                      "Supply Chain CDP CC 2017_Public Data_sheet13_CC3. Targets and Initiatives.csv", 
+                      "Investor CDP 2017_Public Data_sheet12_CC3. Targets and Initiatives.csv", 
+                      "Supply Chain CDP CC 2016_Public Data_sheet12_C-CC3.1.csv", 
+                      "Investor CDP 2016_Public Data_sheet12_CC3.1.csv", 
+                      "Supply Chain CDP CC 2015_Public Data_sheet12_CC3. Targets & Initiatives.csv", 
+                      "Investor CDP 2015_Public Data_sheet12_CC3.1.csv", 
+                      "Supply Chain CDP CC 2014_Public Data_sheet12_CC3. Targets & Initiatives.csv", 
+                      "Investor CDP 2014_Public data_sheet12_CC3. Targets & Initiatives.csv", 
+                      "Supply Chain CDP CC 2013_Public Data_sheet10_3.csv", 
+                      "Supply Chain CDP CC 2013_Public Data_sheet71_SME-3(Targets).csv",
+                      "Supply Chain CDP CC 2013_Public Data_sheet75_SME-3(Management).csv",
+                      "Supply Chain CDP CC 2013_Public Data_sheet76_SME-3.3b.csv",
+                      "Investor CDP 2013_Public Data_sheet10_3.csv", 
+                      "Supply Chain CDP CC 2012_Public Data_sheet8_Management 3.csv", 
+                      "Supply Chain CDP CC 2012_Public Data_sheet76_Management SME 3 (2).csv", 
+                      "Supply Chain CDP CC 2012_Public Data_sheet72_Management SME 3.csv", 
+                      "Investor CDP 2012_Public Data_sheet8_Management 3.csv", 
+                      "Supply Chain CDP CC 2011_Public Data_sheet8_Management 3.csv", 
+                      "Supply Chain CDP CC 2011_Public Data_sheet71_Management SME 3.csv",
+                      "Supply Chain CDP CC 2011_Public Data_sheet75_Management SME 3 (2).csv", 
+                      "Supply Chain CDP CC 2011_Public Data_sheet76_3.3a (2).csv", 
+                      "Investor CDP 2011_Public Data_sheet8_Management 3.csv", 
+                      "Investor CDP 2011_Public Data_sheet151_Management Short 3.csv", 
+                      "Supply Chain CDP CC 2010_Public Data_sheet22_9.6.csv", 
+                      "Investor CDP 2010_Public Data_sheet22_9.6.csv", 
+                      "Investor CDP 2010_Public Data_sheet23_Strategy ¿.csv", 
+                      "Investor CDP 2010_Public Data_sheet24_9.7.csv", 
+                      "Investor CDP 2010_Public Data_sheet21_Strategy 9 (2).csv"))
+
+processed_data <- list()
+for (file in unique(filelist_targets)) {
+  
+  # read and process file function above!
+  processed_data[[file]] <- read_and_process_file(file) 
+  
+  # Find and replace column names containing "Account" so they can be merged
+  account_columns <- grep("account", colnames(processed_data[[file]]))
+  colnames(processed_data[[file]])[account_columns[1]] <- "account no" # replace only the first one bc there's also account_name/accounting_year
+  
+  # company name 
+  name_columns <- grep("account_name|organisation|organization|company name", colnames(processed_data[[file]]))
+  colnames(processed_data[[file]])[name_columns[1]] <- "name"
+  
+  # country 
+  colnames(processed_data[[file]])[grep("country", colnames(processed_data[[file]]), perl=TRUE)] <- "country"
+
+  if(length(grep("2010", file)>0)) {
+    print(file)
+    
+    # colnames(processed_data[[file]])[grep("t8c9.*comment", colnames(processed_data[[file]]),perl=TRUE)] <- "explain_targets" # USE THIS FOR EXPLAIN_INTENSITY_TARGET
+    # colnames(processed_data[[file]])[grep("9.9", colnames(processed_data[[file]]),fixed=TRUE)] <- "initiative_comment"
+    colnames(processed_data[[file]])[grep("9.6.*target type", colnames(processed_data[[file]]),fixed=TRUE)] <- "active_target"
+    colnames(processed_data[[file]])[grep("9.3.*forecast", colnames(processed_data[[file]]),fixed=TRUE)] <- "why_no_target"
+    colnames(processed_data[[file]])[grep("9.7.*describe.*actions", colnames(processed_data[[file]]),fixed=TRUE)] <- "initiative_details" # USE THIS TO CLASSIFY REDUCTION INITIATIVES FOR 2010 if !is.na() <- "Yes"
+    colnames(processed_data[[file]])[grep("9.7.*timescale", colnames(processed_data[[file]]),fixed=TRUE)] <- "payback_period" 
+    colnames(processed_data[[file]])[grep("9.8.*explain why not", colnames(processed_data[[file]]),fixed=TRUE)] <- "why_no_initiatives"
+    
+  }
+  
+  # 2011 is confirmed!
+  if(length(grep("2011|2012|2013|2014|2015|2016|2017", file) > 0)) {
+    print(file)
+
+    colnames(processed_data[[file]])[grep("3.1.*target.*active", colnames(processed_data[[file]]), perl=TRUE)] <- "active_target"
+    colnames(processed_data[[file]])[grep("3\\.1a\\.\\s*scope", colnames(processed_data[[file]]),perl=TRUE)] <- "absolute_target_scope" # 2012-
+    colnames(processed_data[[file]])[grep("3\\.1a.*\\- scope", colnames(processed_data[[file]]),perl=TRUE)] <- "absolute_target_scope" # 2017
+    colnames(processed_data[[file]])[grep("3.1a.*science-based", colnames(processed_data[[file]]),perl=TRUE)] <- "science_based_absolute_target" #2016-
+    colnames(processed_data[[file]])[grep("(?s)3\\.1a.*comment", colnames(processed_data[[file]]),perl=TRUE)] <- "absolute_target_comment"
+    colnames(processed_data[[file]])[grep("3\\.1b\\.\\s*scope", colnames(processed_data[[file]]),perl=TRUE)] <- "intensity_target_scope" #
+    colnames(processed_data[[file]])[grep("3\\.1b.*\\- scope", colnames(processed_data[[file]]),perl=TRUE)] <- "intensity_target_scope" #
+    colnames(processed_data[[file]])[grep("3.1b.*science-based", colnames(processed_data[[file]]),perl=TRUE)] <- "science_based_intensity_target"
+    colnames(processed_data[[file]])[grep("3.1b.*comment", colnames(processed_data[[file]]),perl=TRUE)] <- "intensity_target_comment"
+    colnames(processed_data[[file]])[grep("(?s)3\\.1.*why.*forecast", colnames(processed_data[[file]]),perl=TRUE)] <- "why_no_target"
+    colnames(processed_data[[file]])[grep("3.3.*reduction initiatives.*active", colnames(processed_data[[file]]),perl=TRUE)] <- "reduction_initiatives"
+    colnames(processed_data[[file]])[grep("(?s)3\\.3.*please explain why not", colnames(processed_data[[file]]),perl=TRUE)] <- "why_no_initiatives"
+    colnames(processed_data[[file]])[grep("3.3.*activity type", colnames(processed_data[[file]]),perl=TRUE)] <- "initiative_type"
+    colnames(processed_data[[file]])[grep("3.3.*payback period", colnames(processed_data[[file]]),perl=TRUE)] <- "payback_period" # 2011 onward
+    colnames(processed_data[[file]])[grep("3.3.*description of activity", colnames(processed_data[[file]]),perl=TRUE)] <- "initiative_details"
+  }
+  
+  if(length(grep("2018|2019|2020", file)>0)) {
+    print(file)
+
+    colnames(processed_data[[file]])[grep("primary activity", colnames(processed_data[[file]]),perl=TRUE)] <- "primary_activity"
+    colnames(processed_data[[file]])[grep("c4.1.*target.*active", colnames(processed_data[[file]]), perl=TRUE)] <- "active_target"
+    colnames(processed_data[[file]])[grep("c4\\.1a.*\\- scope", colnames(processed_data[[file]]),perl=TRUE)] <- "absolute_target_scope" # only in 2016-2020?
+    colnames(processed_data[[file]])[grep("c4.1a.*science-based target", colnames(processed_data[[file]]),perl=TRUE)] <- "science_based_absolute_target"
+    colnames(processed_data[[file]])[grep("c4.1a.*detail.*absolute.*explain", colnames(processed_data[[file]]),perl=TRUE)] <- "absolute_target_comment"
+    colnames(processed_data[[file]])[grep("c4\\.1b.*\\- scope", colnames(processed_data[[file]]),perl=TRUE)] <- "intensity_target_scope" # only in 2016-2020?
+    colnames(processed_data[[file]])[grep("c4.1b.*science-based target", colnames(processed_data[[file]]),perl=TRUE)] <- "science_based_intensity_target"
+    colnames(processed_data[[file]])[grep("c4.1b.*detail.*intensity.*explain", colnames(processed_data[[file]]),perl=TRUE)] <- "intensity_target_comment"
+    colnames(processed_data[[file]])[grep("c4.1c.*please explain", colnames(processed_data[[file]]),perl=TRUE)] <- "why_no_target"
+    colnames(processed_data[[file]])[grep("c4.3.*did you have", colnames(processed_data[[file]]),perl=TRUE)] <- "reduction_initiatives"
+    colnames(processed_data[[file]])[grep("c4.3d.*why did you not have", colnames(processed_data[[file]]),perl=TRUE)] <- "why_no_initiatives"
+    colnames(processed_data[[file]])[grep("c4.3b.*details.*type$", colnames(processed_data[[file]]),perl=TRUE)] <- "initiative_type"
+    colnames(processed_data[[file]])[grep("c4.3b.*payback period", colnames(processed_data[[file]]),perl=TRUE)] <- "payback_period"
+    colnames(processed_data[[file]])[grep("c4.3b.*details.*comment", colnames(processed_data[[file]]),perl=TRUE)] <- "initiative_details"
+    
+  }
+  
+  # note filename
+  processed_data[[file]]$filename <- file
+  
+}
+
+
+processed_data_targets <- lapply(processed_data, function(df) {
+  numeric_cols <- sapply(df, is.numeric)
+  df[, numeric_cols] <- lapply(df[, numeric_cols], as.character)
+  return(df)
+})
+
+# Use dplyr::bind_rows to merge the dataframes by row
+merged_data_targets <- bind_rows(processed_data_targets)
+
+info_cols <- c("account no", "name", "year", "filename")
+target_cols <- c("active_target", "absolute_target_scope", "science_based_absolute_target", "absolute_target_comment", "intensity_target_scope", "science_based_intensity_target",
+                 "intensity_target_comment", "why_no_target", "reduction_initiatives", "why_no_initiatives", "initiative_type", "payback_period", "initiative_details")
+View(merged_data_targets[merged_data_targets$`account no` == "943", c(info_cols, target_cols)]) 
+
+write.csv(sort(colnames(merged_data_targets)), "preprocessed_data/cdp_targets_colnames.csv")
+
+# # check columns 
+# c("filename", "year", "response received date", "ticker", "isin", "primary expansion","secondary expansions", "account no", "name", "country", "primary industry", "primary activity", "industry group","public", "authority types", "primary_activity", "primary sector", "primary industry",  "primary questionnaire sector", "active_target", "absolute_target_scope",  "intensity_target_scope", "science_based_intensity_target", "science_based_absolute_target", "absolute_target_comment", "intensity_target_comment",   "reduction_initiatives", "initiative_type", "initiative_details", "payback_period", "why_no_target", "why_no_initiatives", "attachments")
+
+clean_targets <- clean_and_coalesce(merged_data_targets)
+
+# "initiative_type" # USE THIS TO CLASSIFY REDUCTION INITIATIVES FOR 2010 if !is.na() <- "Yes"
+# KEEP THE FILENAME IN THERE SO WE CAN SEARCH FOR "SME" in there
+
+# add columns here!
+# Summarize responses and sources (Inv/SC/both) by company and year
+cdp_targets <- clean_targets %>% 
+  reframe(cdp_response_received_date = safe_to_string((`response received date`)), 
+          cdp_ticker = safe_to_string((ticker)), 
+          cdp_isin = safe_to_string((isin)), # YES
+          cdp_primary_expansion = safe_to_string((`primary expansion`)),
+          cdp_secondary_expansions = safe_to_string((`secondary expansions`)),
+          cdp_country = safe_to_string((country)),
+          cdp_public = safe_to_string((public)),
+          cdp_authority_types = safe_to_string((`authority types`)),
+          cdp_filename = safe_to_string((filename)),
+          cdp_complexity = safe_to_string((complexity)), 
+          cdp_attachments = safe_to_string((attachments)), 
+          cdp_primary_activity = safe_to_string((primary_activity)), # only available for 2020
+          cdp_primary_sector = safe_to_string((`primary sector`)),
+          cdp_primary_industry = safe_to_string((`primary industry`)),
+          cdp_primary_questionnaire_sector = safe_to_string((`primary questionnaire sector`)),
+          cdp_active_target = safe_to_string((active_target)),
+          cdp_science_based_absolute_target = safe_to_string((science_based_absolute_target)),
+          cdp_science_based_intensity_target = safe_to_string((science_based_intensity_target)),
+          cdp_absolute_target_comment = safe_to_string((absolute_target_comment)),
+          cdp_intensity_target_comment = safe_to_string((intensity_target_comment)),
+          cdp_absolute_target_scope = safe_to_string((absolute_target_scope)),
+          cdp_intensity_target_scope = safe_to_string((intensity_target_scope)),
+          cdp_why_no_target = safe_to_string((why_no_target)),
+          # other_targets = toString(unique(other_targets)), # not available for all years just 2018-2020
+          # goods_avoided = toString(unique(goods_avoided)), # not available for all years, just pre-2018
+          # goods_details = toString(unique(goods_details)), # not available for all years, just pre-2018
+          cdp_reduction_initiatives = safe_to_string((reduction_initiatives)), # might align with payback_period
+          cdp_initiative_type = safe_to_string((initiative_type)),
+          cdp_initiative_details = safe_to_string((initiative_details)),
+          cdp_payback_period = safe_to_string((payback_period)),
+          cdp_why_no_initiatives = safe_to_string((why_no_initiatives)),
+          # further_info = toString(unique(further_info)),
+          # recipient = toString(unique(recipient)), # not too relevant?
+          # industry = toString(unique(industry)), # only available for 2020
+          # accounting_year = toString(unique(accounting_year)),# filter for accounting_year = cdp_year?
+          # sector = toString(unique(sector)), # only available for 2020
+          # questionnaire_sector = toString(unique(questionnaire_sector)), # only available for 2020
+          # further_info = toString(unique(further_info)),
+          .by = c(year, `account no`) #, name
+  )
+
+# # for this one, remove NA, and , NA -- handled this above in safe_to_string
+# # thank you gpt4.o
+# # Define a function to clean the strings
+# clean_na <- function(x) {
+#     # Remove "NA, " and " , NA"
+#     x <- gsub("NA, |, NA", "", x)
+#     # Optionally, remove any leading or trailing commas or spaces
+#     x <- trimws(gsub("^, |, $", "", x))
+#     return(x)
+# }
+# 
+# # Apply the function to all character columns in the data frame
+# cdp_targets_cleaned <- cdp_targets %>%
+#     mutate(across(where(is.character), clean_na))
+
+write.csv(cdp_targets, "preprocessed_data/cdp_targets_v2.csv", row.names=FALSE)
+cdp_targets <- read_csv("preprocessed_data/cdp_targets_v2.csv", col_names = TRUE) 
+
+```
+
+# CDP emissions = emis_cols, verif_cols, change_cols, excluded sources and reasons etc. - 3/14/24
+```{r warning=FALSE}
+
+# what if emissions are reported in either inv or SC but not the other, and the emis gets extracted from the other one last? does the previously extracted value get nullified?
+
+# ugh! I forgot to save scope1_merge!
+
+# THANK YOU GPT3.5
+folder_path <- "preprocessed_data/cdp_data_sheets/"
+
+# HOW I DID IT THE FIRST TIME:
+# filenames <- list.files(folder_path)
+# pattern <- "2010.*18|2010.*19|2010.*10|2010.*12|2010.*13|2013.*12|2013.*8|2012.*13|2012.*8|2011.*13|2011.*8"
+# # 2018-2020 "2018.*C7|2019.*C7|2020.*C7|2018.*C6|2019.*C6|2020.*C6" 7.9, 7.9a, 6.1, 6.3, 6.4, 6.4a
+# # 2017-2014 "201.*CC12|201.*CC8"
+# # 2010-2013 "2010.*19|2010.*10|2010.*12|2010.*13|2013.*12|2013.*8|2012.*13|2012.*8|2011.*13|2011.*8"
+# matching_files <- grep(pattern, filenames, value = TRUE, ignore.case = TRUE)
+# # files14to17 <- matching_files[c(105, 104, 103, 97, 96, 94, 93, 89, 88, 82, 81, 80, 77, 73, 72, 66, 65, 62, 58, 57, 51, 50, 47, 46, 40, 39, 37, 34, 33, 27, 26, 25, 21, 20, 14, 13, 9, 8, 2, 1)] # how to handle accounting year...
+# # files18to20 <- matching_files[c(131, 141, 123, 124, 127, 128, 110, 100, 98, 97, 94, 93, 82, 72, 69, 68,65, 64, 51, 41, 39, 38, 35, 34, 23, 13, 10, 9, 6, 5)]
+# # files10to13 <- matching_files[c(40, 42,49, 50,51,58,64,91,101,105,113,118,119,157,165,169,170,171,225,226,232,233,256,257,258,265,271,274,275,281,289,294,295,309,313,321,326,327,342,343,347,348,354,355,369,370)]
+# 
+# filelist <- c(files10to13, files14to17, files18to20)
+# 
+# # https://www.statology.org/r-export-list-to-file/
+# sink('preprocessed_data/filelist.txt')
+# print(filelist)
+# sink() #close external connection to file 
+
+# Read it back in https://stackoverflow.com/questions/8933999/reading-a-text-file-with-an-irregular-header-in-r
+filelist_perm <- read.table("preprocessed_data/cdp_emissions_filelist_PERMANENT.txt", skip=6)["V2"]
+
+verification_file_additions <- grep("2010.*20.1A|2010.*Emissions.*12|2010.*Emissions.*13|2010.*15.1|2010.*10.3|2011.*8.6b|2011.*Emissions.*8|2011.*13.2|2012.*8.6b|2012.*Emissions.*8|2012.*13.2|2013.*_8.csv|2013.*-8.csv|2013.*8.6b|2014.*8.6a|2014.*8.7a|2014.*8.*emissions|2015.*8.1|2015.*8.6a|2015.*8.7a|2015.*8.*emissions|2016.*8.3a|2016.*8.6a|2016.*8.7a|2017.*CC8.*Emissions|2017.*8.3a|2017.*8.6a|2017.*8.7a|2018.*6.5|2018.*10.1a|2019.*10.1a|2019.*6.5|2019.*7.1a|2019.*7.5|2019.*7.6a|2019.*7.9|2020.*6.5|2020.*10.1a|2020.*10.1b|2020.*10.1c", list.files(folder_path), value = TRUE, ignore.case = TRUE)
+
+# 2019 C7.5_C2_Break down your total gross global Scope 2 emissions by country/region. - Scope 2, location-based (metric tons CO2e)
+# C7.6a_C3_Break down your total gross global Scope 2 emissions by business division. - Scope 2, market-based emissions (metric tons CO2e) - market based by business division doesn't have as many total emissions as loc-based by business division
+# 2019: reasons for change is in 7.9
+# 2019 6.5 has scope 3
+# 2017 SC respondents also has accounting year for S123 emis ... and operational vs. financial control... 
+# SME: Abbott Laboratories is an SME in 2017 (2017 CC8. Emissions Data and (for supply chain, CC8. Emissions Data SME))
+# 2015 investor has 8.1, 2015 SC has 8. Emissions Data
+
+filelist <- unique(c(filelist_perm$V2, verification_file_additions))
+# filelist <-  "Supply Chain CDP CC 2015_Public Data_sheet35_CC8. Emissions Data.csv" # "Supply Chain CDP CC 2017_Public Data_sheet43_CC8.3a.csv" #"Investor CDP 2012_Public Data_sheet30_Emissions 8.csv"
+
+processed_data <- list()
+for (file in filelist) {
+  
+  # see function above to read and process file in filelist
+  processed_data[[file]] <- read_and_process_file(file) 
+  
+  # replace line breaks, thanks perplexity
+  colnames(processed_data[[file]]) <- gsub("[\r\n]", "", colnames(processed_data[[file]])) 
+  
+  # Find and replace column names containing "Account" so they can be merged
+  account_columns <- grep("account", tolower(colnames(processed_data[[file]])))
+  colnames(processed_data[[file]])[account_columns[1]] <- "account no" # replace only the first one bc there's also account_name/accounting_year
+  
+  # name columns
+  name_columns <- grep("account_name|organisation|organization|company name", tolower(colnames(processed_data[[file]])))
+  colnames(processed_data[[file]])[name_columns[1]] <- "name"
+  
+  if(length(grep("2010", file)>0)) {
+    print(file)
+    
+    # VERIFICATION & CHANGE COLS
+    if(length(grep("Emissions 18", file, perl=TRUE, ignore.case = TRUE) > 0)) { 
+      colnames(processed_data[[file]])[grep("Further Information", colnames(processed_data[[file]]), perl=TRUE, ignore.case = TRUE)] <- "verification_standard" 
+      colnames(processed_data[[file]])[grep("19.1.*absolute.*vary significantly.*previous year", colnames(processed_data[[file]]), perl=TRUE, ignore.case = TRUE)] <- "change_dir" # yes/no, see change_reason details for possible directions
+      colnames(processed_data[[file]])[grep("19.2. please explain why they have varied and why the variation is significant.", colnames(processed_data[[file]]),perl=TRUE, ignore.case = TRUE)] <- "change_reason" # changed from change_detail 10/10/2024 can categorize these into the 10 categories using AI
+    }
+    if(length(grep("20.1A", file, perl=TRUE, ignore.case = TRUE) > 0)) { 
+      colnames(processed_data[[file]])[grep("20.1C1. Scope 1 (Q12.1)", colnames(processed_data[[file]]), perl=TRUE, ignore.case = TRUE)] <- "verification_s1_percent" 
+      colnames(processed_data[[file]])[grep("20.1C2. Scope 2 (Q13.1)", colnames(processed_data[[file]]), perl=TRUE, ignore.case = TRUE)] <- "verification_s2_percent"
+      colnames(processed_data[[file]])[grep("20.1C3. Scope 3 (Q15.1)", colnames(processed_data[[file]]), perl=TRUE, ignore.case = TRUE)] <- "verification_s3_percent" # unique to 2010?
+    }
+    
+    # EMISSIONS NUMBERS
+    # WHICH YEAR
+    if(length(grep("Emissions 12", file, perl=TRUE, ignore.case = TRUE) > 0)) { 
+      colnames(processed_data[[file]])[grep("Reporting PeriodFrom", colnames(processed_data[[file]]), perl=TRUE, ignore.case = TRUE)] <- "scope1_which_year" # equals scope2 year
+      # no reporting boundary reported in 2010
+    }
+    if(length(grep("Emissions 13", file, perl=TRUE, ignore.case = TRUE) > 0)) { 
+      colnames(processed_data[[file]])[grep("Reporting PeriodFrom", colnames(processed_data[[file]]), perl=TRUE, ignore.case = TRUE)] <- "scope2_which_year" # equals scope2 year
+      # no reporting boundary reported in 2010
+    }
+    
+    # EMISSIONS NUMBERS
+    colnames(processed_data[[file]])[grep("12.1.*gross global scope 1", colnames(processed_data[[file]]),perl=TRUE, ignore.case = TRUE)] <- "scope1"
+    colnames(processed_data[[file]])[grep("13.1.*gross global scope 2", colnames(processed_data[[file]]),perl=TRUE, ignore.case = TRUE)] <- "scope2"
+    colnames(processed_data[[file]])[grep("15.1C2. Metric tonnes of CO2-e", colnames(processed_data[[file]]),perl=TRUE, ignore.case = TRUE)] <- "scope3" # added 
+    colnames(processed_data[[file]])[grep("15.1. Please provide data on sources of Scope 3 emissions that are relevant to your organization.", colnames(processed_data[[file]]),perl=TRUE, ignore.case = TRUE)] <- "scope3_which_category" # added 
+    
+    # EXCLUSIONS
+    colnames(processed_data[[file]])[grep("10.3.*source$", colnames(processed_data[[file]]),perl=TRUE, ignore.case = TRUE)] <- "excluded_sources"
+    colnames(processed_data[[file]])[grep("10.3.*why the source is excluded", colnames(processed_data[[file]]), perl=TRUE)] <- "excluded_reason"
+    
+  }
+  if(length(grep("2011|2012", file)>0)) {
+    print(file)
+    
+    # VERIFICATION
+    
+    # unspecified verification standard and level for 2011:2012 (and 2013)
+    if((length(grep("8.6b", file, perl=TRUE, ignore.case = TRUE) > 0))) { 
+      colnames(processed_data[[file]])[grep("further details of the verification", colnames(processed_data[[file]]), perl=TRUE, ignore.case = TRUE)] <- "verification_quality"
+      colnames(processed_data[[file]])[grep("relevant standard", colnames(processed_data[[file]]), perl=TRUE, ignore.case = TRUE)] <- "verification_standard"
+      # no proportion verified  
+    }
+    # percent verified for S1 or S2 
+    if((length(grep("Emissions 8", file, perl=TRUE, ignore.case = TRUE) > 0))) { 
+      colnames(processed_data[[file]])[grep("proportion of your Scope 1 emissions that are verified", colnames(processed_data[[file]]), perl=TRUE, ignore.case = TRUE)] <- "verification_s1_percent"
+      colnames(processed_data[[file]])[grep("proportion of your Scope 2 emissions that are verified", colnames(processed_data[[file]]), perl=TRUE, ignore.case = TRUE)] <- "verification_s1_percent"
+    }
+    
+    # CHANGE
+    colnames(processed_data[[file]])[grep("13.1a.*direction of change", colnames(processed_data[[file]]),perl=TRUE, ignore.case = TRUE)] <- "change_dir"
+    colnames(processed_data[[file]])[grep("13.1a.*emissions value", colnames(processed_data[[file]]),perl=TRUE, ignore.case = TRUE)] <- "change_%"
+    colnames(processed_data[[file]])[grep("13.1a.*reason", colnames(processed_data[[file]]),perl=TRUE, ignore.case = TRUE)] <- "change_reason"
+    colnames(processed_data[[file]])[grep("13.1a.*comment", colnames(processed_data[[file]]),perl=TRUE, ignore.case = TRUE)] <- "change_detail"
+    
+    # NUMBERS - remove any caps in the search term
+    # extract accounting year -- later select only equal to first(year) in reframe
+    if(length(grep("Emissions 8", file, perl=TRUE, ignore.case = TRUE) > 0)) { 
+      colnames(processed_data[[file]])[grep("Reporting PeriodFrom", colnames(processed_data[[file]]), perl=TRUE, ignore.case = TRUE)] <- "scope1_which_year" # for 2015|2014|2013, also equals scope2 year
+      # reporting boundary -- and we should use the operational one
+      colnames(processed_data[[file]])[grep("boundary you are using.*scope 1", colnames(processed_data[[file]]), perl=TRUE, ignore.case = TRUE)] <- "scope1_boundary" # 2015|2014|2013 also applies to scope 2 boundary
+    }
+    
+    # this is in Emissions 8
+    colnames(processed_data[[file]])[grep("8.2a.*gross global scope 1.*metric tonnes", colnames(processed_data[[file]]), perl=TRUE, ignore.case = TRUE)] <- "scope1"
+    # careful that this only extracts scope 2... 
+    colnames(processed_data[[file]])[grep("8.3a.*metric tonnes co2e", colnames(processed_data[[file]]), perl=TRUE, ignore.case = TRUE)] <- "scope2"
+    
+    # this is in 13.2
+    colnames(processed_data[[file]])[grep("13.2.*intensity figure", colnames(processed_data[[file]]),perl=TRUE, ignore.case = TRUE)] <- "intensity" # 2012.*13.2
+    colnames(processed_data[[file]])[grep("13.2.*reason for change", colnames(processed_data[[file]]),perl=TRUE, ignore.case = TRUE)] <- "change_reason_intensity" # 2012.*13.2
+    
+    
+    # EXCLUSIONS - double check because these are in (2)
+    if(length(grep("8.4a.*2", file, perl=TRUE, ignore.case = TRUE) > 0)) { 
+      colnames(processed_data[[file]])[grep("8.4a. source$", colnames(processed_data[[file]]),perl=TRUE, ignore.case = TRUE)] <- "excluded_sources"
+      colnames(processed_data[[file]])[grep("8.4a.*why the source is excluded", colnames(processed_data[[file]]),perl=TRUE)] <- "excluded_reason"
+    }
+  }
+  
+  
+  # FILES 2013-2017
+  
+  if(length(grep("2013|2014|2015|2016|2017", file) > 0)) {
+    print(file)
+    
+    # VERIFICATION
+    
+    # unspecified verification for 2013
+    if((length(grep("2013", file) > 0)) & (length(grep("8.6b", file, perl=TRUE, ignore.case = TRUE) > 0))) { 
+      colnames(processed_data[[file]])[grep("further details of the verification", colnames(processed_data[[file]]), perl=TRUE, ignore.case = TRUE)] <- "verification_quality"
+      colnames(processed_data[[file]])[grep("relevant standard", colnames(processed_data[[file]]), perl=TRUE, ignore.case = TRUE)] <- "verification_standard"
+      # no proportion verified  
+    }
+    # s1 verification for 2014:2016
+    if((length(grep("2014|2015|2016", file) > 0)) & (length(grep("8.6a", file, perl=TRUE, ignore.case = TRUE) > 0))) { 
+      colnames(processed_data[[file]])[grep("further details of the verification", colnames(processed_data[[file]]), perl=TRUE, ignore.case = TRUE)] <- "verification_s1_quality"
+      colnames(processed_data[[file]])[grep("relevant standard", colnames(processed_data[[file]]), perl=TRUE, ignore.case = TRUE)] <- "verification_s1_standard"
+      colnames(processed_data[[file]])[grep("proportion of reported scope 1", colnames(processed_data[[file]]), perl=TRUE, ignore.case = TRUE)] <- "verification_s1_percent"
+    }
+    # s2 verification for 2014:2016
+    if((length(grep("2014|2015|2016", file) > 0)) & (length(grep("8.7a", file, perl=TRUE, ignore.case = TRUE) > 0))) { 
+      colnames(processed_data[[file]])[grep("further details of the verification", colnames(processed_data[[file]]), perl=TRUE, ignore.case = TRUE)] <- "verification_s2_quality"
+      colnames(processed_data[[file]])[grep("relevant standard", colnames(processed_data[[file]]), perl=TRUE, ignore.case = TRUE)] <- "verification_s2_standard"
+      colnames(processed_data[[file]])[grep("proportion of reported scope 2", colnames(processed_data[[file]]), perl=TRUE, ignore.case = TRUE)] <- "verification_s2_percent"
+    }
+    # s1 verification for 2017
+    if((length(grep("2017", file) > 0)) & (length(grep("8.6a", file, perl=TRUE, ignore.case = TRUE) > 0))) { 
+      colnames(processed_data[[file]])[grep("type of verification or assurance", colnames(processed_data[[file]]), perl=TRUE, ignore.case = TRUE)] <- "verification_s1_quality"
+      colnames(processed_data[[file]])[grep("relevant standard", colnames(processed_data[[file]]), perl=TRUE, ignore.case = TRUE)] <- "verification_s1_standard"
+      colnames(processed_data[[file]])[grep("proportion of reported scope 1 emissions verified", colnames(processed_data[[file]]), perl=TRUE, ignore.case = TRUE)] <- "verification_s1_percent"
+    }
+    # s2 verification for 2017
+    if((length(grep("2017", file) > 0)) & (length(grep("8.7a", file, perl=TRUE, ignore.case = TRUE) > 0))) { 
+      colnames(processed_data[[file]])[grep("type of verification or assurance", colnames(processed_data[[file]]), perl=TRUE, ignore.case = TRUE)] <- "verification_s2_quality"
+      colnames(processed_data[[file]])[grep("relevant standard", colnames(processed_data[[file]]), perl=TRUE, ignore.case = TRUE)] <- "verification_s2_standard"
+      colnames(processed_data[[file]])[grep("proportion of reported scope 1 emissions verified", colnames(processed_data[[file]]), perl=TRUE, ignore.case = TRUE)] <- "verification_s2_percent"
+    }
+    
+    
+    # CHANGE
+    
+    colnames(processed_data[[file]])[grep("12.1a.*direction of change", colnames(processed_data[[file]]),perl=TRUE, ignore.case = TRUE)] <- "change_dir"
+    colnames(processed_data[[file]])[grep("12.1a.*emissions value", colnames(processed_data[[file]]),perl=TRUE, ignore.case = TRUE)] <- "change_%"
+    colnames(processed_data[[file]])[grep("12.1a.*reason$", colnames(processed_data[[file]]),perl=TRUE, ignore.case = TRUE)] <- "change_reason"
+    if((length(grep("2013|2014|2015", file) > 0)) & (length(grep("12.1a", file, perl=TRUE, ignore.case = TRUE) > 0))) { 
+      colnames(processed_data[[file]])[grep("12.1a.*comment", colnames(processed_data[[file]]),perl=TRUE, ignore.case = TRUE)] <- "change_detail"
+    }
+    if((length(grep("2016|2017", file) > 0)) & (length(grep("12.1a", file, perl=TRUE, ignore.case = TRUE) > 0))) { 
+      colnames(processed_data[[file]])[grep("12.1a.*explain and include calculation", colnames(processed_data[[file]]),perl=TRUE, ignore.case = TRUE)] <- "change_detail"
+    }
+    
+    
+    # EMISSIONS - removed CC
+    
+    # ACCOUNTING YEAR AND BOUNDARY FOR EMISSION NUMBERS
+    if((length(grep("2015|2014|2013", file) > 0)) & (length(grep("CC8.*Emissions|CC8.1|8.csv", file, perl=TRUE, ignore.case = TRUE) > 0))) { 
+      colnames(processed_data[[file]])[grep("Reporting PeriodFrom", colnames(processed_data[[file]]), perl=TRUE, ignore.case = TRUE)] <- "scope1_which_year" # for 2015|2014|2013, also equals scope2 year
+      # reporting boundary -- and we should use the operational one
+      colnames(processed_data[[file]])[grep("boundary you are using.*scope 1", colnames(processed_data[[file]]), perl=TRUE, ignore.case = TRUE)] <- "scope1_boundary" # 2015|2014|2013 also applies to scope 2 boundary
+    }
+    if((length(grep("2016", file) > 0)) & (length(grep("CC8.1", file) > 0))) { 
+      colnames(processed_data[[file]])[grep("Reporting PeriodFrom", colnames(processed_data[[file]]), perl=TRUE, ignore.case = TRUE)] <- "scope1_which_year"
+      # reporting boundary -- and we should use the operational one
+      colnames(processed_data[[file]])[grep("boundary you are using.*scope 1", colnames(processed_data[[file]]), perl=TRUE, ignore.case = TRUE)] <- "scope1_boundary"
+    }
+    if((length(grep("2016", file) > 0)) & (length(grep("8.3a", file) > 0))) { 
+      colnames(processed_data[[file]])[grep("Reporting PeriodFrom", colnames(processed_data[[file]]), perl=TRUE, ignore.case = TRUE)] <- "scope2_which_year"
+    }
+    # if boundary is.na(), then just go with the SME emissions data "provide your gross global..."
+    if((length(grep("2017", file) > 0)) & (length(grep("CC8.*Emissions", file, perl=TRUE, ignore.case=TRUE) > 0))) { 
+      colnames(processed_data[[file]])[grep("accounting_year", colnames(processed_data[[file]]), perl=TRUE, ignore.case = TRUE)] <- "scope1_which_year"
+      # reporting boundary -- and we should use the operational one
+      colnames(processed_data[[file]])[grep("boundary you are using.*scope 1", colnames(processed_data[[file]]), perl=TRUE, ignore.case = TRUE)] <- "scope1_boundary"
+    } # with the boundaries, Emissions Data SME has no boundary column associated with scope 1... 
+    if((length(grep("2017", file) > 0)) & (length(grep("8.3", file) > 0))) { 
+      colnames(processed_data[[file]])[grep("accounting_year", colnames(processed_data[[file]]), perl=TRUE, ignore.case = TRUE)] <- "scope2_which_year"
+    }
+    
+    # EMISSION NUMBERS
+    
+    # 2017, 2016, 2015 
+    colnames(processed_data[[file]])[grep("8.2.*gross global scope 1.*metric tonnes co2e", colnames(processed_data[[file]]),perl=TRUE, ignore.case = TRUE)] <- "scope1"
+    
+    if(length(grep("2013|2014|2015", file) > 0)) { # 2016:2017 have scope 2 loc and market-based, this ironically in file Inv.*2015.*8.1
+      colnames(processed_data[[file]])[grep("8.3.*gross global scope 2", colnames(processed_data[[file]]),perl=TRUE, ignore.case = TRUE)] <- "scope2" # 2013, 2014, 2015 SME still just has scope2 
+    }
+    
+    # 8.3a for 2017 supply chain and investor... (make sure it extracts the tonnage)
+    colnames(processed_data[[file]])[grep("8.3.*scope 2.*location", colnames(processed_data[[file]]),perl=TRUE, ignore.case = TRUE)] <- "scope2_loc"
+    colnames(processed_data[[file]])[grep("8.3.*scope 2.*market", colnames(processed_data[[file]]),perl=TRUE, ignore.case = TRUE)] <- "scope2_market"
+    
+    # EXCLUSIONS
+    colnames(processed_data[[file]])[grep("8.4a.*why the source is excluded", colnames(processed_data[[file]]),perl=TRUE)] <- "excluded_reason" 
+    if((length(grep("2013", file) > 0)) & (length(grep("8.4a", file, perl=TRUE, ignore.case = TRUE) > 0))) { 
+      colnames(processed_data[[file]])[grep("8.4a. source$", colnames(processed_data[[file]]), perl=TRUE, ignore.case = TRUE)] <- "excluded_sources"
+    }
+    if((length(grep("2014|2015|2016|2017", file) > 0)) & (length(grep("8.4a", file, perl=TRUE, ignore.case = TRUE) > 0))) { 
+      colnames(processed_data[[file]])[grep("8.4a.*details.*sources.*not included.*source", colnames(processed_data[[file]]), perl=TRUE, ignore.case = TRUE)] <- "excluded_sources"
+    }
+    
+    
+  }
+  
+  if(length(grep("2018|2019|2020", file)>0)) {
+    print(file)
+    
+    # VERIFICATION
+    if((length(grep("2018|2019", file) > 0)) & (length(grep("10.1a", file, perl=TRUE, ignore.case = TRUE) > 0))) { 
+      colnames(processed_data[[file]])[grep("type of verification or assurance", colnames(processed_data[[file]]), perl=TRUE, ignore.case = TRUE)] <- "verification_quality"
+      colnames(processed_data[[file]])[grep("relevant standard", colnames(processed_data[[file]]), perl=TRUE, ignore.case = TRUE)] <- "verification_standard"
+      colnames(processed_data[[file]])[grep("proportion of reported emissions verified", colnames(processed_data[[file]]), perl=TRUE, ignore.case = TRUE)] <- "verification_percent" # applies to S1+S2
+    }
+    if((length(grep("2020", file) > 0)) & (length(grep("10.1a", file, perl=TRUE, ignore.case = TRUE) > 0))) { 
+      colnames(processed_data[[file]])[grep("type of verification or assurance", colnames(processed_data[[file]]), perl=TRUE, ignore.case = TRUE)] <- "verification_s1_quality"
+      colnames(processed_data[[file]])[grep("relevant standard", colnames(processed_data[[file]]), perl=TRUE, ignore.case = TRUE)] <- "verification_s1_standard"
+      colnames(processed_data[[file]])[grep("proportion of reported emissions verified", colnames(processed_data[[file]]), perl=TRUE, ignore.case = TRUE)] <- "verification_s1_percent" # applies to S1+S2
+    }
+    if((length(grep("2020", file) > 0)) & (length(grep("10.1b", file, perl=TRUE, ignore.case = TRUE) > 0))) { 
+      colnames(processed_data[[file]])[grep("type of verification or assurance", colnames(processed_data[[file]]), perl=TRUE, ignore.case = TRUE)] <- "verification_s2_quality"
+      colnames(processed_data[[file]])[grep("relevant standard", colnames(processed_data[[file]]), perl=TRUE, ignore.case = TRUE)] <- "verification_s2_standard"
+      colnames(processed_data[[file]])[grep("proportion of reported emissions verified", colnames(processed_data[[file]]), perl=TRUE, ignore.case = TRUE)] <- "verification_s2_percent" # applies to S1+S2
+    }
+    if((length(grep("2020", file) > 0)) & (length(grep("10.1c", file, perl=TRUE, ignore.case = TRUE) > 0))) { 
+      colnames(processed_data[[file]])[grep("type of verification or assurance", colnames(processed_data[[file]]), perl=TRUE, ignore.case = TRUE)] <- "verification_s3_quality"
+      colnames(processed_data[[file]])[grep("relevant standard", colnames(processed_data[[file]]), perl=TRUE, ignore.case = TRUE)] <- "verification_s3_standard"
+      colnames(processed_data[[file]])[grep("proportion of reported emissions verified", colnames(processed_data[[file]]), perl=TRUE, ignore.case = TRUE)] <- "verification_s3_percent" # applies to S1+S2
+    }
+    
+    # CHANGE
+    if(length(grep("7.9a", file) > 0)) { # only extract RowName for the change in emissions files
+      colnames(processed_data[[file]])[grep("RowName", colnames(processed_data[[file]]), perl=TRUE, ignore.case = TRUE)] <- "change_reason" # in 2020 there were 10 reasons
+      colnames(processed_data[[file]])[grep("7.9a.*change in emissions", colnames(processed_data[[file]]), perl=TRUE, ignore.case = TRUE)] <- "change_mtco2e"
+      colnames(processed_data[[file]])[grep("7.9a.*direction of change", colnames(processed_data[[file]]), perl=TRUE, ignore.case = TRUE)] <- "change_dir"
+      colnames(processed_data[[file]])[grep("7.9a.*emissions value", colnames(processed_data[[file]]),perl=TRUE, ignore.case = TRUE)] <- "change_%"
+      colnames(processed_data[[file]])[grep("7.9a.*please explain calculation", colnames(processed_data[[file]]),perl=TRUE, ignore.case = TRUE)] <- "change_detail"
+    }
+    
+    # NUMBERS - removed C OMG it was the tonnes to tons! removed gross global, added the "- " so it is the specific sub response (not year etc.)
+    if(length(grep("6.1", file) > 0)) { # only extract RowName for the change in emissions files
+      colnames(processed_data[[file]])[grep("RowName", colnames(processed_data[[file]]), perl=TRUE, ignore.case = TRUE)] <- "scope1_which_year"
+      colnames(processed_data[[file]])[grep("6.1.*- gross global scope 1.*metric.*co2e", colnames(processed_data[[file]]),perl=TRUE, ignore.case = TRUE)] <- "scope1"
+    }
+    if(length(grep("6.3", file) > 0)) { # only extract RowName for the change in emissions files
+      colnames(processed_data[[file]])[grep("RowName", colnames(processed_data[[file]]), perl=TRUE, ignore.case = TRUE)] <- "scope2_which_year"
+      colnames(processed_data[[file]])[grep("6.3.*- scope 2.*location", colnames(processed_data[[file]]),perl=TRUE, ignore.case = TRUE)] <- "scope2_loc"
+      colnames(processed_data[[file]])[grep("6.3.*- scope 2.*market", colnames(processed_data[[file]]),perl=TRUE, ignore.case = TRUE)] <- "scope2_market"
+    }
+    if(length(grep("6.5", file) > 0)) { # only extract RowName for the change in emissions files
+      colnames(processed_data[[file]])[grep("RowName", colnames(processed_data[[file]]), perl=TRUE, ignore.case = TRUE)] <- "scope3_which_category"
+      colnames(processed_data[[file]])[grep("6.5.*scope 3.*metric.*co2e", colnames(processed_data[[file]]),perl=TRUE, ignore.case = TRUE)] <- "scope3"
+    }
+    
+    # EXCLUSIONS - removed C
+    if(length(grep("6.4a", file) > 0)) { # only extract RowName for the change in emissions files
+      colnames(processed_data[[file]])[grep("6.4a.*details.*- source$", colnames(processed_data[[file]]),perl=TRUE, ignore.case = TRUE)] <- "excluded_sources"
+      colnames(processed_data[[file]])[grep("6.4a.*why the source is excluded", colnames(processed_data[[file]]),perl=TRUE)] <- "excluded_reason"
+    }
+    
+    
+  }
+  
+} # 1:36-
+
+
+ 
+processed_data_emissions <- lapply(processed_data, function(df) {
+  numeric_cols <- sapply(df, is.numeric)
+  df[, numeric_cols] <- lapply(df[, numeric_cols], as.character)
+  return(df)
+})
+
+# Use dplyr::bind_rows to merge the dataframes by row
+merged_data_emissions <- bind_rows(processed_data_emissions)
+
+# save to examine column names, make sure none flew under the .* PERL radar
+write.csv(sort(tolower(colnames(merged_data_emissions))), "preprocessed_data/cdp_emissions_colnames.csv") # oops, I saved the whole dataset, not just a list of column names! no wonder it's 1.2GB!
+
+View(merged_data_emissions[(merged_data_emissions$`account no` == "21320") & (merged_data_emissions$year == 2013), c("account no", "name", "year", "filename", "change_%", "change_mtco2e", "change_dir", "change_reason", "change_detail", "excluded_sources", "excluded_reason")]) # 21318 = ACCENTURE
+# "verification_s1_quality", "verification_s1_standard", "verification_s1_percent", "verification_s2_quality", "verification_s2_standard", "verification_s2_percent",
+
+# runs on all the merged data incl. non-consolidated columns!
+# emissions are coalesced, so even if the other one extracted later has NA for S1, the first reported one will appear
+clean_emissions <- clean_and_coalesce(merged_data_emissions) # %>% # [,colnames(cdp_emissions)[c(1:3,26:32)]]
+  #mutate(across(everything(), clean_na)) # replace any answered "NA" with "Not Answered" so we can eliminate NA's and repetition in safe_to_string
+#3:51-3:52 takes a long time because this is for all the merged columns, not just the chosen ones!
+
+View(clean_emissions[(clean_emissions$`account no` == "21320") & (clean_emissions$year == 2013), c("account no", "name", "year", "filename",  "verification_quality", "verification_standard")])
+
+
+cdp_emissions <- clean_emissions %>%
+  distinct(name, year, scope1, scope1_which_year, scope2, scope2_loc, scope2_market, scope2_which_year, scope3, scope3_which_category, .keep_all = TRUE) %>%
+  reframe(cdp_name = safe_to_string(name),
+          cdp_response_received_date = safe_to_string((`response received date`)), 
+          cdp_ticker = safe_to_string((ticker)), 
+          cdp_isin = safe_to_string((isin)), # YES
+          cdp_primary_expansion = safe_to_string((`primary expansion`)),
+          cdp_secondary_expansions = safe_to_string((`secondary expansions`)),
+          cdp_country = safe_to_string((country)),
+          #public = safe_to_string((public)),
+          cdp_authority_types = safe_to_string((`authority types`)),
+          cdp_filename = safe_to_string((filename)),
+          cdp_complexity = safe_to_string((complexity)), 
+          cdp_attachments = safe_to_string((attachments)), 
+          cdp_primary_activity = safe_to_string((`primary activity`)), # only available for 2020
+          cdp_primary_sector = safe_to_string((`primary sector`)),
+          cdp_primary_industry = safe_to_string((`primary industry`)),
+          cdp_primary_questionnaire_sector = safe_to_string((`primary questionnaire sector`)),
+          
+          # extra care for emissions
+          cdp_scope12_boundary = safe_to_string((`scope1_boundary`)), # over all available years... tells you if they're inconsistent, and if multiple per year we take mean... 
+          cdp_reporting_year_coverage = safe_to_string(c("scope1:", `scope1_which_year`, "scope2:",`scope2_which_year`)),
+            
+          # get correct values matched based on reporting year, etc. 
+          cdp_scope1 = if ((isTRUE(as.numeric(first(year)) %in% c(2018:2020))) & (isTRUE(any(scope1_which_year == "Reporting year", na.rm = TRUE)))) {
+            mean(as.numeric(scope1)[scope1_which_year == "Reporting year"], na.rm = TRUE) # shouldn't be more than one value to sum
+            # what if it's actually a year, then extract where IT equals the year we're looking at, first(year)
+          } else if ((isTRUE(as.numeric(first(year)) %in% c(2018:2020))) & (isTRUE(any(scope1_which_year == "Row 1")))) { # 2018 has Row 1
+            mean(as.numeric(scope1)[scope1_which_year == "Row 1"], na.rm = TRUE) 
+          } else if ((isTRUE(as.numeric(first(year)) %in% c(2010:2016)))) {
+            year_val <- format(as.Date(scope1_which_year, format="%d %b %Y"), "%Y")
+            # don't eliminate companies that have a number just because it isn't operational control... can filter for cdp_scope12_boundary later
+            mean(as.numeric(scope1)[(as.numeric(year_val) == (as.numeric(first(year)) - 1)) ], na.rm=TRUE) # & (is.na(scope1_boundary) | scope1_boundary %in% "Operational control")
+          } else if ((isTRUE(as.numeric(first(year)) %in% c(2017)))) {
+            year_val <- format(as.Date(scope1_which_year, format="%Y"), "%Y")
+            mean(as.numeric(scope1)[(as.numeric(year_val) == (as.numeric(first(year)) - 1)) ], na.rm=TRUE) # & (is.na(scope1_boundary) | scope1_boundary == "Operational control")
+          } else {
+            NA_real_
+          },
+          
+          # SCOPE 2 - unspecified, location-based, market-based
+          cdp_scope2 = if ((isTRUE(as.numeric(first(year)) %in% c(2018:2020))) & (isTRUE(any(scope2_which_year == "Row 1")))) { # inferring that Row 1 is Reporting year
+            mean(as.numeric(scope2)[scope2_which_year == "Row 1"], na.rm = TRUE) 
+            # 2016:2017 don't have unspecified scope 2... 
+          } else if ((isTRUE(as.numeric(first(year)) %in% c(2011:2015)))) { 
+            year_val <- format(as.Date(scope1_which_year, format="%d %b %Y"), "%Y") # scope1_which_year = scope2_which_year in 2012:2015! so check for 2014 in it
+            mean(as.numeric(scope2)[as.numeric(year_val) == (as.numeric(first(year)) - 1)], na.rm=TRUE)
+          } else if ((isTRUE(as.numeric(first(year)) %in% c(2010)))) { 
+            year_val <- format(as.Date(scope2_which_year, format="%d %b %Y"), "%Y") # scope1_which_year != scope2_which_year in 2010 (well it may be equal, but it's in diff sheets)
+            mean(as.numeric(scope2)[as.numeric(year_val) == (as.numeric(first(year)) - 1)], na.rm=TRUE)
+          } else {
+            NA_real_
+          },
+          # 2017 Investor has accounting_year and it should match as scope2_which_year == (as.numeric(first(year))-1)
+          cdp_scope2_loc = if ((isTRUE(as.numeric(first(year)) %in% c(2018:2020))) & (isTRUE(any(scope2_which_year == "Reporting year", na.rm = TRUE)))) {
+            mean(as.numeric(scope2_loc)[scope2_which_year == "Reporting year"], na.rm = TRUE) # shouldn't be more than one value to sum
+            # what if it's actually a year, then extract where IT equals the year we're looking at, first(year)
+          } else if ((isTRUE(as.numeric(first(year)) %in% c(2018:2020))) & (isTRUE(any(scope2_which_year == "Row 1")))) { # 2018 has Row 1
+            mean(as.numeric(scope2_loc)[scope2_which_year == "Row 1"], na.rm = TRUE) 
+          } else if ((isTRUE(as.numeric(first(year)) %in% c(2016)))) {
+            year_val <- format(as.Date(scope2_which_year, format="%d %b %Y"), "%Y")
+            mean(as.numeric(scope2_loc)[as.numeric(year_val) == (as.numeric(first(year)) - 1)], na.rm=TRUE)
+          } else if ((isTRUE(as.numeric(first(year)) %in% c(2017)))) {
+            year_val <- format(as.Date(scope2_which_year, format="%Y"), "%Y") # because it's actually an accounting_year numeric... 
+            mean(as.numeric(scope2_loc)[as.numeric(year_val) == (as.numeric(first(year)) - 1)], na.rm=TRUE)
+          } else {
+            NA_real_
+          },
+          cdp_scope2_market = if ((isTRUE(as.numeric(first(year)) %in% c(2018:2020))) & (isTRUE(any(scope2_which_year == "Reporting year", na.rm = TRUE)))) {
+            mean(as.numeric(scope2_market)[scope2_which_year == "Reporting year"], na.rm = TRUE) # shouldn't be more than one value to sum
+            # what if it's actually a year, then extract where IT equals the year we're looking at, first(year)
+          } else if ((isTRUE(as.numeric(first(year)) %in% c(2018:2020))) & (isTRUE(any(scope2_which_year == "Row 1")))) { # 2018 has Row 1
+            mean(as.numeric(scope2_market)[scope2_which_year == "Row 1"], na.rm = TRUE) 
+          } else if ((isTRUE(as.numeric(first(year)) %in% c(2016)))) {
+            year_val <- format(as.Date(scope2_which_year, format="%d %b %Y"), "%Y")
+            mean(as.numeric(scope2_market)[as.numeric(year_val) == (as.numeric(first(year)) - 1)], na.rm=TRUE)
+          } else if ((isTRUE(as.numeric(first(year)) %in% c(2017)))) {
+            year_val <- format(as.Date(scope2_which_year, format="%Y"), "%Y") # because it's actually an accounting_year numeric... 
+            mean(as.numeric(scope2_market)[as.numeric(year_val) == (as.numeric(first(year)) - 1)], na.rm=TRUE)
+          } else {
+            NA_real_
+          },
+          
+          # SCOPE 3 - upstream, downstream
+          cdp_scope3_upstream = if ((isTRUE(as.numeric(first(year)) %in% c(2010,2018:2020))) & (isTRUE(any(scope3_which_category %in% c("Other (upstream)", "Purchased goods and services", "Upstream leased assets", "Upstream transportation and distribution", "Waste generated in operations", "Fuel-and-energy-related activities (not included in Scope 1 or 2)", "Franchises", "Employee commuting","Capital goods", "Business travel", "Capital equipment", "Employee commuting and teleworking", "Energy-related activities not included in scope 2", "Leased assets (Scope 1 emissions of the lessee)", "Other: Air travel", "Purchased goods & services - cradle-to-gate emissions", "Purchased goods & services - direct supplier emissions", "Transportation & distribution of inputs & waste generated in operations", "Other: Water consumption", "Other: Water consumption and wastewater treatment"))))) {
+            sum(as.numeric(scope3)[scope3_which_category %in% c("Other (upstream)", "Purchased goods and services", "Upstream leased assets", "Upstream transportation and distribution", "Waste generated in operations", "Fuel-and-energy-related activities (not included in Scope 1 or 2)", "Franchises", "Employee commuting","Capital goods", "Business travel")], na.rm = TRUE)
+          } else {
+            NA_real_
+          },
+          # the 2010 labels are a bit different than the 2019 categories
+          cdp_scope3_downstream = if ((isTRUE(as.numeric(first(year)) %in% c(2010,2018:2020))) & (isTRUE(any(scope3_which_category %in% c("Other (downstream)", "Downstream leased assets", "Downstream transportation and distribution", "End of life treatment of sold products", "Investments", "Processing of sold products", "Use of sold products", "Disposal of sold products at the end of their life", "Leased assets (Scope 1 emissions of the lessor)", "Transportation & distribution of sold products", "Use of sold goods and services"))))) {
+            sum(as.numeric(scope3)[scope3_which_category %in% c("Other (downstream)", "Downstream leased assets", "Downstream transportation and distribution", "End of life treatment of sold products", "Investments", "Processing of sold products", "Use of sold products")], na.rm = TRUE)
+          } else {
+            NA_real_
+          },
+          
+          .by = c(year, `account no`)  # , name just account no... not name in case
+  )  # 35,613 unlimited countries!
+
+# VIEW CHECK OUTPUTS
+info_cols <- c("account no", "cdp_name", "year", "cdp_primary_industry", "cdp_filename")
+emis_cols <- c("cdp_scope12_boundary", "cdp_reporting_year_coverage", 'cdp_scope1','cdp_scope2','cdp_scope2_loc','cdp_scope2_market','cdp_scope3_upstream', 'cdp_scope3_downstream')
+verif_cols <- c("cdp_verification_s1_quality", "cdp_verification_s1_standard", "cdp_verification_s1_percent", 
+                "cdp_verification_s2_quality", "cdp_verification_s2_standard", "cdp_verification_s2_percent") #"cdp_verification_quality", "cdp_verification_standard",
+change_cols <- c("cdp_change_reason", "cdp_change_dir", "cdp_change_detail", "cdp_change_%", "cdp_change_mtco2e", "cdp_excluded_sources", "cdp_excluded_reason")
+View(cdp_emissions[cdp_emissions$`account no` == "943", c(info_cols, emis_cols)] %>% filter(!is.na(year))) # idk why year NA still gets added to each company..)) # 943 = ARKEMA, 285 = 3M COMPANY, 21318 = ACCENTURE
+# View(cdp_emissions[cdp_emissions$`account no` == "8800",c(info_cols,emis_cols)] %>% filter(!is.na(year))) # idk why year NA still gets added to each company..) # 943 = ARKEMA, 285 = 3M COMPANY
+# View(cdp_emissions[cdp_emissions$`account no` == "285",c(info_cols,emis_cols)] %>% filter(!is.na(year))) # idk why year NA still gets added to each company..) # 943 = ARKEMA, 285 = 3M COMPANY
+
+
+# SAVE TO CSV
+write.csv(cdp_emissions,"preprocessed_data/cdp_emissions_v2.csv", row.names=FALSE)
+# cdp_emissions_v2 <- read.csv("preprocessed_data/cdp_emissions_v2.csv", check.names = FALSE)
+
+
+
+# VERIFICATION CDP DATASET TO MERGE
+
+cdp_verification <- clean_emissions %>%
+  distinct(name, year, verification_quality, verification_standard, verification_s1_quality, verification_s1_standard, verification_s1_percent, verification_s2_quality, verification_s2_standard, verification_s2_percent, verification_s3_percent, verification_s3_standard, verification_s3_quality, change_dir, change_reason, `change_%`, change_mtco2e, change_detail, .keep_all = TRUE) %>%
+  reframe(cdp_name = safe_to_string(name),
+          cdp_filename = safe_to_string((filename)),
+          cdp_primary_industry = safe_to_string((`primary industry`)),
+
+          # VERIFICATION/ASSURANCE
+          
+          cdp_verification_s1_quality = if (is.na(safe_to_string(verification_s1_quality))) {
+            safe_to_string(verification_quality)
+          } else {
+            safe_to_string(verification_s1_quality)
+          },
+          cdp_verification_s1_standard = if (is.na(safe_to_string(verification_s1_standard))) {
+            safe_to_string(verification_standard)
+          } else {
+            safe_to_string(verification_s1_standard)
+          },
+          cdp_verification_s1_percent =if (is.na(safe_to_string(verification_s1_percent))) {
+            safe_to_string(verification_percent)
+          } else {
+            safe_to_string(verification_s1_percent) 
+          }, 
+          cdp_verification_s2_quality = if (is.na(safe_to_string(verification_s2_quality))) {
+            safe_to_string(verification_quality)
+          } else {
+            safe_to_string(verification_s2_quality)
+          },
+          cdp_verification_s2_standard = if (is.na(safe_to_string(verification_s2_standard))) {
+            safe_to_string(verification_standard)
+          } else {
+            safe_to_string(verification_s2_standard) 
+          }, 
+          cdp_verification_s2_percent = if (is.na(safe_to_string(verification_s2_percent))) {
+            safe_to_string(verification_percent)
+          } else {
+            safe_to_string(verification_s2_percent) 
+          }, 
+          cdp_verification_s3_percent = safe_to_string(`verification_s3_percent`), # only in 2010 as far as I can tell
+
+          
+          # OTHER CHANGE METRICS
+          
+          cdp_change_reason = safe_to_string((change_reason)),   
+          cdp_change_dir = safe_to_string((`change_dir`)),
+          cdp_change_detail = safe_to_string((`change_detail`)),
+          `cdp_change_%` = safe_to_string((`change_%`)),
+          cdp_change_mtco2e = safe_to_string((change_mtco2e)), 
+          cdp_excluded_sources = safe_to_string((excluded_sources)),
+          cdp_excluded_reason = safe_to_string((excluded_reason)), # took out the unique() on 10/10/2024 for the ones that go w diff reasons!
+          .by = c(year, `account no`)  # , name just account no... not name in case
+  )  # 35,613 unlimited countries!
+
+
+info_cols <- c("account no", "cdp_name", "year", "cdp_primary_industry", "cdp_filename")
+emis_cols <- c("cdp_scope12_boundary", "cdp_reporting_year_coverage", 'cdp_scope1','cdp_scope2','cdp_scope2_loc','cdp_scope2_market','cdp_scope3_upstream', 'cdp_scope3_downstream')
+verif_cols <- c("cdp_verification_s1_quality", "cdp_verification_s1_standard", "cdp_verification_s1_percent", 
+                "cdp_verification_s2_quality", "cdp_verification_s2_standard", "cdp_verification_s2_percent", "cdp_verification_s3_percent") 
+#"cdp_verification_quality", "cdp_verification_standard" got merged into S1 and S2
+change_cols <- c("cdp_change_reason", "cdp_change_dir", "cdp_change_detail", "cdp_change_%", "cdp_change_mtco2e", "cdp_excluded_sources", "cdp_excluded_reason")
+View(cdp_verification[cdp_verification$`account no` == "21320",c(info_cols,verif_cols, change_cols)] %>% filter(!is.na(year))) # idk why year NA still gets added to each company..)) # 943 = ARKEMA, 285 = 3M COMPANY, 21318 = ACCENTURE
+
+# View(cdp_emissions[cdp_emissions$`account no` == "8800",c(info_cols,emis_cols)] %>% filter(!is.na(year))) # idk why year NA still gets added to each company..) # 943 = ARKEMA, 285 = 3M COMPANY
+# View(cdp_emissions[cdp_emissions$`account no` == "285",c(info_cols,emis_cols)] %>% filter(!is.na(year))) # idk why year NA still gets added to each company..) # 943 = ARKEMA, 285 = 3M COMPANY
+
+write.csv(cdp_verification,"preprocessed_data/cdp_verification.csv", row.names=FALSE)
+
+# check distribution over time
+
+# var_emis_by_year_summary <- cdp_emissions %>% 
+#   ungroup() %>%
+#   reframe(
+#     cdp_scope1 = toString(unique(as.character(cdp_scope1))),
+#     cdp_scope2 = toString(unique(as.character(cdp_scope2))),
+#     cdp_scope2_loc = toString(unique(as.character(cdp_scope2_loc))),
+#     cdp_scope2_market = toString(unique(as.character(cdp_scope2_market))),
+#     .by = c(year))
+# 
+# var_verif_by_year_summary <- cdp_verification %>% ungroup() %>%
+#   reframe(
+#     cdp_verification_s1_quality = toString(unique(cdp_verification_s1_quality)),
+#     cdp_verification_s2_quality = toString(unique(cdp_verification_s2_quality)),
+#     cdp_verification_s2_quality = toString(unique(cdp_verification_s2_quality)), # 2560 primary_tickers; 3260 tickers;
+#     .by = c(year))
+
+```
+
+# CDP_summary
+```{r}
+cols <- c("account no", "year")
+cdp_summaries[cols] <- lapply(cdp_summaries[cols], as.character)
+cdp_targets[cols] <- lapply(cdp_targets[cols], as.character)
+cdp_emissions[cols] <- lapply(cdp_emissions[cols], as.character)
+cdp_verification[cols] <- lapply(cdp_verification[cols], as.character)
+
+cols <- c("cdp_primary_industry", "cdp_primary_activity", "cdp_primary_sector", 
+          "cdp_primary_questionnaire_sector", "cdp_activities", "cdp_sectors", "cdp_industries") 
+cdp_summaries[colnames(cdp_summaries) %in% cols] <- lapply(cdp_summaries[colnames(cdp_summaries) %in% cols], function(x) gsub("&", "and", x))
+cdp_targets[colnames(cdp_targets) %in% cols] <- lapply(cdp_targets[colnames(cdp_targets) %in% cols], function(x) gsub("&", "and", x))
+cdp_emissions[colnames(cdp_emissions) %in% cols] <- lapply(cdp_emissions[colnames(cdp_emissions) %in% cols], function(x) gsub("&", "and", x))
+cdp_verification[colnames(cdp_verification) %in% cols] <- lapply(cdp_verification[colnames(cdp_verification) %in% cols], function(x) gsub("&", "and", x))
+
+# merge cdp_status_summary, cdp_emissions, cdp_targets, cdp_investor_score
+# View(as.data.frame(colnames(cdp)) sorted alphabetically, manually coalesced the ones with 3+ names
+cdp <- cdp_summaries %>% # now the NA, NA, NA would be if they were NA across summary, emissions, and targets... 
+  full_join(cdp_emissions, by = c("account no", "year")) %>%
+  full_join(cdp_verification, by = c("account no", "year")) %>%
+  full_join(cdp_targets, by = c("account no", "year")) %>%
+  reframe(
+    cdp_name = safe_to_string(unique(c(cdp_name, cdp_name.x, cdp_name.y))), 
+    
+    # LOCATION IDENTIFIERS 
+    cdp_region = safe_to_string(cdp_region), 
+    cdp_country = safe_to_string(unique(c(cdp_country, cdp_country.x, cdp_country.y))),
+    
+    # INDUSTRY IDENTIFIERS
+    cdp_activities = safe_to_string(cdp_activities),
+    cdp_sectors = safe_to_string(cdp_sectors),
+    cdp_industries = safe_to_string(cdp_industries),
+    cdp_primary_activity = safe_to_string(unique(c(cdp_primary_activity.x, cdp_primary_activity.y))), # only available for 2020
+    cdp_primary_sector = safe_to_string(unique(c(cdp_primary_sector.x, cdp_primary_sector.y))),
+    cdp_primary_industry = safe_to_string(unique(c(cdp_primary_industry.x, cdp_primary_industry.y,cdp_primary_industry.x.x, cdp_primary_industry.y.y))),
+    cdp_primary_questionnaire_sector = safe_to_string(unique(c(cdp_primary_questionnaire_sector.x, cdp_primary_questionnaire_sector.y))),
+    
+    # TIME STAMPS
+    cdp_submitted_date = safe_to_string(cdp_submitted_date),
+    cdp_amended_date = safe_to_string(cdp_ammended_date),
+    
+    # MATCHING IDs
+    cdp_primary_ticker = safe_to_string(cdp_primary_ticker),
+    cdp_ticker = safe_to_string(unique(c(cdp_ticker, cdp_ticker.x, cdp_ticker.y))), 
+    cdp_primary_isin = safe_to_string(cdp_primary_isin),
+    cdp_isin = safe_to_string(unique(c(cdp_isin, cdp_isin.x, cdp_isin.y))), # YES
+    
+    # FOR AUDIENCE TYPE
+    cdp_filename = safe_to_string(unique(c(cdp_filename.x, cdp_filename.x.x, cdp_filename.y, cdp_filename.y.y))),
+    
+    # TARGETS
+    cdp_active_target = safe_to_string(cdp_active_target),
+    cdp_science_based_absolute_target = safe_to_string(cdp_science_based_absolute_target),
+    cdp_science_based_intensity_target = safe_to_string(cdp_science_based_intensity_target),
+    cdp_absolute_target_comment = safe_to_string(cdp_absolute_target_comment),
+    cdp_intensity_target_comment = safe_to_string(cdp_intensity_target_comment),
+    cdp_absolute_target_scope = safe_to_string(cdp_absolute_target_scope),
+    cdp_intensity_target_scope = safe_to_string(cdp_intensity_target_scope),
+    cdp_why_no_target = safe_to_string(cdp_why_no_target),
+    cdp_reduction_initiatives = safe_to_string(cdp_reduction_initiatives),
+    cdp_initiative_type = safe_to_string(cdp_initiative_type),
+    cdp_initiative_details = safe_to_string(cdp_initiative_details),
+    cdp_payback_period = safe_to_string(cdp_payback_period),
+    cdp_why_no_initiatives = safe_to_string(cdp_why_no_initiatives),
+    
+    # EMISSIONS
+    cdp_scope1 = safe_to_string(cdp_scope1),
+    cdp_scope2 = safe_to_string(cdp_scope2),
+    cdp_scope2_loc = safe_to_string(cdp_scope2_loc),
+    cdp_scope2_market = safe_to_string(cdp_scope2_market),
+    cdp_scope12_boundary = safe_to_string(cdp_scope12_boundary),
+    cdp_scope3_upstream = safe_to_string(cdp_scope3_upstream),
+    cdp_scope3_downstream = safe_to_string(cdp_scope3_downstream),
+    
+    # VERIFICATION
+    cdp_verification_s1_percent = safe_to_string(cdp_verification_s1_percent),
+    cdp_verification_s1_quality = safe_to_string(cdp_verification_s1_quality),
+    cdp_verification_s1_standard = safe_to_string(cdp_verification_s1_standard),
+    cdp_verification_s2_percent = safe_to_string(cdp_verification_s2_percent),
+    cdp_verification_s2_quality = safe_to_string(cdp_verification_s2_quality),
+    cdp_verification_s2_standard = safe_to_string(cdp_verification_s2_standard),
+    cdp_verification_s3_percent = safe_to_string(cdp_verification_s3_percent),
+    
+    # CHANGE & EXCLUSION COLS
+    cdp_change_reason = safe_to_string(cdp_change_reason),
+    cdp_change_dir = safe_to_string(cdp_change_dir),
+    cdp_change_detail = safe_to_string(cdp_change_detail),
+    `cdp_change_%` = safe_to_string( `cdp_change_%`),
+    cdp_change_mtco2e = safe_to_string(cdp_change_mtco2e),
+    cdp_excluded_sources = safe_to_string(cdp_excluded_sources),
+    cdp_excluded_reason = safe_to_string(cdp_excluded_reason),
+    
+    .by = c(year, `account no`) #, name
+  ) #40125 of 87 vars to --> 61 vars --> 35724 obs of 62 vars --> 35654 obs of 53 vars without grouping by name
+
+# %>% distinct(`year`,`account no`,.keep_all=TRUE) 
+# collect all names... collect all ISINs
+# 3:55-3:56 
+# 41930... --> 35724
+#filter(!is.na(name)) %>% # there is indeed 1 row of "NA" in Supply Chain CDP CC 2016_Public Data_sheet38_C-CC8
+#cdp_response_received_date_emissions = safe_to_string((response_received_date.x)),
+#cdp_response_received_date_targets = safe_to_string((response_received_date.y)), 
+#cdp_status = safe_to_string((cdp_status)),
+#cdp_samples = safe_to_string((samples)),
+#cdp_bbid = safe_to_string((bbid)),
+#cdp_discloser_id = safe_to_string((`discloser id`)),
+#cdp_primary_expansion = toString(unique(c(primary_expansion.x, primary_expansion.y, `primary expansion`))),
+#cdp_secondary_expansions = toString(unique(c(secondary_expansions.x, secondary_expansions.y, `secondary expansions`))),
+#cdp_authority_types = toString(unique(c(authority_types.x, authority_types.y, `authority types`))),
+#cdp_documents = safe_to_string((documents)),
+#cdp_version = safe_to_string((version)),
+#cdp_complexity = toString(unique(c(complexity.x, complexity.y, complexity))), # SPLIT??
+#cdp_program_name = safe_to_string((`program_name`)), 
+#cdp_project_year = safe_to_string((project_year)),
+#cdp_minimum_tier = safe_to_string((`minimum tier`)),
+#cdp_public = safe_to_string((c(cdp_public.x, cdp_public.y, `cdp_public`))),
+# 
+
+# RERUN BELOW AFTER INITIATIVES
+# write.csv(cdp, "preprocessed_data/cdp_v2.csv")
+# cdp <- read.csv("preprocessed_data/cdp_v2.csv", check.names = FALSE)[,-1]
+
+# might not want to do this in case isin / geography / activity changed... in esg. etc
+# cdp_summary <- cdp_summary %>% group_by(`account no`) %>% arrange(year) %>% fill(isins, countries, activity, .direction = "downup")
+
+```
+
+# initiative_details
+```{r}
+
+# Function to extract unique themes
+extract_unique_themes <- function(initiatives) {
+  unique_themes <- c() # Initialize an empty vector to store unique themes
+  
+  for (initiative in initiatives) {
+    items <- unlist(strsplit(initiative, ",")) # Split by comma
+    items <- trimws(items) # Trim whitespace
+    
+    for (item in items) {
+      if (grepl(":", item)) { # Check if item contains a colon
+        # Extract parts before and after the colon
+        main_part <- sub(":.*", "", item)
+        theme_part <- sub(".*:\\s*", "", item)
+        
+        # Normalize and clean both parts
+        main_part <- tolower(main_part)
+        theme_part <- tolower(theme_part)
+        main_part <- gsub("[^a-z0-9 ]", "", main_part)
+        theme_part <- gsub("[^a-z0-9 ]", "", theme_part)
+        
+        # Combine and store unique themes
+        combined_theme <- paste0(main_part, ": ", theme_part)
+        unique_themes <- c(unique_themes, combined_theme)
+      }
+    }
+  }
+  
+  # Get unique themes and their counts
+  theme_counts <- sort(table(unique_themes), decreasing = TRUE)
+  
+  # Return themes in order of counts
+  return(theme_counts)
+}
+
+# ran once didn't need to run again after doing manual process below
+# Get the main themes # names(theme_counts)
+# main_themes <- extract_unique_themes(cdp$cdp_initiative_type)
+
+# # Output the results
+# View(as.data.frame(main_themes))
+
+cdp <- cdp %>%
+  mutate(
+    cdp_initiative_type_process_efficiency = ifelse(grepl("energy efficiency: Processes|Process emissions reductions|Waste recovery|fugitive emissions reductions|combined heat and power|cogeneration|product design|process optimization|process material substitution|electrification|retire*fossil fuel*generation|fuel switch|fuel efficiency|energy efficient*generator|machine equipment replacement", cdp_initiative_type, ignore.case = TRUE), 1, 0),
+    cdp_initiative_type_low_carbon_installation = ifelse(grepl("Low carbon energy installation|low-carbon energy installation|solar|wind", cdp_initiative_type, ignore.case = TRUE), 1, 0),
+    cdp_initiative_type_building_energy_efficiency = ifelse(grepl("Energy efficiency: Building services|Building Energy Management Systems|\\(BEMS\\)|Heating, Ventilation and Air Conditioning \\(HVAC\\)|hvac|Energy efficiency: Building fabric|building fabric|Lighting|leed*certificat|insulation|bms", cdp_initiative_type, ignore.case = TRUE), 1, 0),
+    cdp_initiative_type_low_carbon_purchase = ifelse(grepl("Low carbon energy purchase|low-carbon energy purchase|purchas* renewable|electricity mix|renewable*certificate|purchas*zero carbon|renewable*power source|green energy procurement|offset", cdp_initiative_type, ignore.case = TRUE), 1, 0),
+    cdp_initiative_type_behavioral_change = ifelse(grepl("Behavioral change|Teleworking|Employee commuting", cdp_initiative_type, ignore.case = TRUE), 1, 0),
+    cdp_initiative_type_transportation = ifelse(grepl("Transportation: fleet|Transportation: use|Company fleet vehicle replacement|electric bicycle|electric*charging station|less emitting vehicles|less emmiting vehicles|fleet vehicle efficiency", cdp_initiative_type, ignore.case = TRUE), 1, 0),
+    cdp_initiative_type_other = ifelse(grepl("Other, please specify|Other", cdp_initiative_type, ignore.case = TRUE), 1, 0),
+    cdp_initiative_type_NA = ifelse(grepl("NA, NA|Question not applicable", cdp_initiative_type, ignore.case = TRUE)|is.na(cdp_initiative_type), 1, 0),
+  ) # other is sometimes the transportation... 
+
+View(cdp[cdp$year %in% c(2018:2019), c("year", "account no", "cdp_name", "cdp_initiative_type", "cdp_initiative_type_process_efficiency", "cdp_initiative_type_low_carbon_installation", "cdp_initiative_type_building_energy_efficiency", "cdp_initiative_type_low_carbon_purchase", "cdp_initiative_type_behavioral_change", "cdp_initiative_type_transportation", "cdp_initiative_type_other", "cdp_initiative_type_NA")])
+
+# thanks to perplexity for case_when formatting help
+cdp <- cdp %>%
+  mutate(
+    cdp_science_based_intensity_target_logit = case_when(
+      # Condition 1: Assign 0 if NA or matches specific patterns
+      is.na(cdp_science_based_intensity_target) | grepl("Question not applicable|Hidden Answer|Don't know|No.*do not anticipate.*next 2 years|^No", cdp_science_based_intensity_target, ignore.case=TRUE) ~ 0,
+      
+      # Condition 2: Assign 1 for specific phrases
+      grepl("No, but we anticipate setting one in the next 2 years|No, but we are reporting another target.*science-based", cdp_science_based_intensity_target, ignore.case=TRUE) ~ 1,
+      
+      # Condition 3: Assign 2 for "Yes.*not approved"
+      grepl("Yes.*not.*approved", cdp_science_based_intensity_target, ignore.case=TRUE) ~ 2,
+      
+      # Condition 4: Assign 3 for exact "Yes" (after removing NA)
+      grepl("^Yes$|Yes", cdp_science_based_intensity_target, ignore.case=TRUE) ~ 3, # there are lots of yes' and no's... who's saying that?
+      
+      # Default case (optional, if no condition is met)
+      TRUE ~ NA_real_),
+    cdp_science_based_absolute_target_logit = case_when(
+      # Condition 1: Assign 0 if NA or matches specific patterns
+      is.na(cdp_science_based_absolute_target) | grepl("Question not applicable|Hidden Answer|Don't know|No.*do not anticipate.*next 2 years|^No", cdp_science_based_absolute_target, ignore.case=TRUE) ~ 0,
+      
+      # Condition 2: Assign 1 for specific phrases
+      grepl("No, but we anticipate setting one in the next 2 years|No, but we are reporting another target.*science-based", cdp_science_based_absolute_target, ignore.case=TRUE) ~ 1,
+      
+      # Condition 3: Assign 2 for "Yes.*not approved"
+      grepl("Yes.*not.*approved", cdp_science_based_absolute_target, ignore.case=TRUE) ~ 2,
+      
+      # Condition 4: Assign 3 for exact "Yes" (after removing NA)
+      grepl("^Yes$|Yes.*has been approved", cdp_science_based_absolute_target, ignore.case=TRUE) ~ 3, # there are lots of yes' and no's... who's saying that?
+      
+      # Default case (optional, if no condition is met)
+      TRUE ~ NA_real_),
+  cdp_active_target_logit = case_when(
+      # Condition 1: Assign 0 if NA or matches specific patterns
+      is.na(cdp_active_target) | grepl("^No$|No target|Question not applicable|Hidden Answer|Don't know", cdp_active_target, ignore.case=TRUE) ~ 0,
+      
+      # Condition 2: Assign 1 for specific phrases
+      grepl("^Intensity target$|Intensity target|Renewable", cdp_active_target, ignore.case=TRUE) ~ 1,
+      
+      # Condition 3: Assign 2 for "Yes.*not approved"
+      grepl("^Absolute target$|Absolute target", cdp_active_target, ignore.case=TRUE) ~ 2,
+      
+      # Condition 4: Assign 3 for exact "Yes" (after removing NA)
+      grepl("Both|absolute and intensity|absolute.*intensity", cdp_active_target, ignore.case=TRUE) ~ 3, # there are lots of yes' and no's... who's saying that?
+      
+      # Default case (optional, if no condition is met)
+      TRUE ~ NA_real_)
+  )
+
+# check 
+# unique(cdp$cdp_active_target[is.na(cdp$cdp_active_target_logit)])
+
+cdp <- cdp %>%
+  mutate(cdp_ISIN = ifelse(is.na(cdp_primary_isin), gsub(", .*$", "", gsub("NA, ", "", cdp_isin)), cdp_primary_isin)) 
+cdp$cdp_ISIN[cdp$cdp_ISIN == "0"] <- NA
+
+cdp <- cdp %>%
+  ungroup() %>%
+  group_by(`account no`) %>% 
+  arrange(`account no`, year) %>%
+  fill(cdp_ISIN, .direction = "updown") 
+cdp$cdp_ISIN[cdp$cdp_ISIN == "0"] <- NA
+
+
+cdp$cdp_year <- as.numeric(cdp$year) - 1
+
+cdp <- cdp %>% filter(!is.na(`account no`))
+
+write.csv(cdp, "preprocessed_data/cdp_v2.csv", row.names=FALSE)
+cdp <- read.csv("preprocessed_data/cdp_v2.csv", check.names = FALSE)#[,-1]
+
+```
+
+
+# WRDS merge in R first: this is where we merge with compustat and trucost from WRDS
+```{r}
+# getting the data: 
+# compustat global > fundamentals annual > search by ISIN company code (from cdp_ISIN) with one code per line .txt > 2009-01 to 2020-12 > consolidated, intl & domestic
+cat(unique(cdp$cdp_ISIN[!is.na(cdp$cdp_ISIN)]), file = "comp_search_isins.txt", sep = "\n")
+# # try searching entire global database? and name matching?
+# compustat_v2_cdp_subset <- read_csv("compustat_v2_cdp_ISIN_search.csv") # don't limit yet because name matching might catch more
+# length(unique(compustat_v2_cdp_subset$gvkey)) # 2073
+# length(unique(compustat_v2_cdp_subset$isin)) # 2073 isins
+
+compustat_v2_comp_whole <- read_csv("compustat_v2_whole_comp_database.csv")
+
+# CHECKED THAT THIS MATCHES (within 2 gvkeys that aren't in cdp) DOWNLOADS ON YEAR BY YEAR BASIS FROM COMPUSTAT WEB BROWSER
+# # load all the compustat df's - I've done this before... dfs[[]]
+# comp_filenames <- grep(dir(getwd()), pattern = "comp.*whole.csv", perl = TRUE)
+# comp_dfs <- list()
+# for (n in 1:length(comp_filenames)) {
+#   comp <- read_csv(dir(getwd())[comp_filenames[n]])
+#   comp_dfs[[n]] <- comp
+# }
+# comp_df <- do.call("rbind", comp_dfs) # about 2k more observations than the first time 2009-01 to 2020-01; now 2009-01 to 2021-01
+# nrow(comp_df[comp_df$fyear %in% 2009:2019,]) #418752 observations in 2009:2019
+# nrow(compustat_v2_comp_whole[compustat_v2_comp_whole$comp_fyear %in% 2009:2019,]) #416961 # that's 1791 new observations that could have cdp matches but how many more gvkeys?
+# length(unique(comp_df$gvkey[comp_df$fyear %in% 2009:2019])) #49,603 gvkeys in that date range
+# length(unique(compustat_v2_comp_whole$comp_gvkey[compustat_v2_comp_whole$comp_fyear %in% 2009:2019])) #49,601 gvkeys in that date range
+# # only 2 gvkeys and they were DANANG BOOK and MANGAL ELECTRONIC. Searched for both names in CDP and no results. So the full compustat download seems to have matched with whatever I was able to download on a year by year basis.
+# 
+# setdiff(unique(comp_df$gvkey[comp_df$fyear %in% 2009:2019]), unique(compustat_v2_comp_whole$comp_gvkey[compustat_v2_comp_whole$comp_fyear %in% 2009:2019]))
+
+length(unique(compustat_v2_comp_whole$gvkey)) # 50651 gvkeys
+length(unique(cdp_plus_wrds$comp_gvkey)) # 2076 gvkeys  in the merge... 
+length(unique(cdp_plus_wrds$cdp_ISIN)) # 2076 gvkeys / 3355 ISINs in the merge... 
+
+# trucost environment: 2009-01 to 2020-12, search entire database, s1, s2 loc/market, s3 up/down, absolute and intensity
+trucost_v2_tru_whole <- read_csv("trucost_v2_tru_whole.csv")
+
+# add prefix to the compustat and trucost whole datasets
+colnames(compustat_v2_comp_whole) <- paste0("comp_", gsub(" ", "_", colnames(compustat_v2_comp_whole)))
+colnames(trucost_v2_tru_whole) <- paste0("tru_", gsub(" ", "_", colnames(trucost_v2_tru_whole)))
+
+```
+
+
+# isin+namematch comp/tru
+```{r}
+# FUNCTIONS TO CLEAN NAMES AND NAMEMATCH
+
+clean_names1<- function(names) {
+  cleaned_names <- names %>%
+    toupper() %>%
+    str_remove_all("[.,\\-/]") %>%
+    str_replace_all(", INC.|, INC| INC.| INC$", " INCORPORATED") %>%
+    str_replace_all(", LTD.|, LTD| LTD$", " LTD") %>%
+    str_replace_all(", LLC", " LLC") %>%
+    str_replace_all(" PLC$", " PLC") %>%
+    str_replace_all(", S.A.| S/A", " SA") %>%
+    str_replace_all("\\s*\\([^\\)]+\\)", "") %>%
+    str_replace_all("INT'L", "INTL") %>% # remove single quotes from int'l
+    str_replace_all(" CO.,| CO,| CO ", " COMPANY") %>%
+    str_replace_all("\\.", "") %>%
+    str_replace_all(",", "") %>%
+    str_replace_all("LIMITED", "LTD") %>%
+    str_replace_all("CORPORATION", "CORP") %>%
+    str_replace_all("-", "") %>%
+    str_replace_all("  ", " ") %>%
+    str_replace_all("\\+", " PLUS ") %>% # based on conm in comp_
+    str_replace_all("COMPANYLTD|COLTD", "COMPANY LTD")
+  return(cleaned_names)
+}
+
+#### usage for cdp names among compustat names
+cdp$cdp_cleaned_names1 <- clean_names1(cdp$cdp_name)
+compustat_v2_comp_whole$comp_name_cleaned <- clean_names1(compustat_v2_comp_whole$comp_conm) # takes more than a minute for so many names! 4M rows
+
+
+library(stringdist)
+# testing matches by country and name
+# smaller_df can be the namematch_df, namematch_df will append column of namematches
+# for the cdp_comp namematches, I had a separate "summary_subset2" that was my namematch_df
+# for the cdp_tru matches I want the smaller_df to be my "summary_subset2 aka namematch df
+# take the smaller df as the one with the search terms to search the pool terms
+
+# # if name has more than 5 characters, get first 2/3 of the name, else, just search for whole thing...
+#     if(nchar(search_term) > 5) {
+#       search_string <- substr(search_term, 1, floor(nchar(search_term)/5*4))
+#     } else{
+#       search_string <- search_term
+#     }
+
+namematch <- function(namematch_df, searched_colname, search_list, pool_list, prefix) {
+  
+  # iterate through the smaller length of search terms first, and search among the larger list/pool for matches
+  for (search_term in search_list) {
+    
+    # track progress
+    print(paste(which(search_list == search_term), "/", length(search_list)))
+    
+    # get first 2/3 of the name
+    search_string <- substr(search_term, 1, floor(nchar(search_term)/5*4))
+    pattern_escaped_name <- gsub("([\\(\\)])", "\\\\\\1", search_string)
+    print(pattern_escaped_name)
+    
+    larger_df_name_matches <- unique(pool_list[grep(pattern_escaped_name, pool_list)]) # 48K
+    
+    distances <- rep(NA_real_, length(larger_df_name_matches))
+    substr_dist <- rep(NA_real_, length(larger_df_name_matches)) # optimize for both!
+    length_sim <- rep(NA_real_, length(larger_df_name_matches))
+    for (i in seq_along(larger_df_name_matches)) {
+      distances[i] <- stringsim(larger_df_name_matches[i], search_term, method = "jw")
+      substr_dist[i] <- stringsim(substring(larger_df_name_matches[i], 1, nchar(search_term)), search_term, method = "jw") # the whole search term because 4/5 of the smaller ones is just a few characters
+      length_sim[i] <- 1/abs(nchar(larger_df_name_matches[i]) - nchar(search_term))
+    }
+    
+    # only calculate best match if the substr_dist is a match?
+    # if (substr_dist[i] > 0 & !is.na(substr_dist[i]))
+    # Logical index for rows where substr_dist > 0 and not NA
+    # idx <- which(substr_dist > 0 & !is.na(substr_dist))
+    # # Apply calculation only to those rows
+    # best_match[idx] <- larger_df_name_matches[which.max(sqrt(distances[idx]^2 + (2*substr_dist[idx])^2 + length_sim[idx]^2))]
+    best_match <- larger_df_name_matches[which.max(sqrt(distances^2 + (2*substr_dist)^2 + length_sim^2))]
+    
+    # take any matches and fill up
+    if (length(best_match) > 0) {
+      print(paste("found name_match for ", search_term, ": ", best_match))
+      new_col <- paste0(prefix, "_name_match")
+      namematch_df[[new_col]][namematch_df[[searched_colname]] == search_term] <- best_match
+    }
+  }
+  return(namematch_df)
+}
+
+
+# instead of manually going through like I did before... can I set up a system of ISIN, country, industry checks to rule out these matches? would there be any matches made outside of name matches if I used ISIN and year?
+# am I sure that I want account number to be the thing I control for? probably... independently reporting units w their own emissions... 
+
+# here's the simplist isin match that doesn't take forever! and goes by year!
+id_by_account <- cdp %>% ungroup() %>%
+  reframe(cdp_ISINs = toString(unique(cdp_ISIN[!is.na(cdp_ISIN)])),
+          cdp_names = toString(unique(cdp_cleaned_names1[!is.na(cdp_cleaned_names1)])),
+          .by = c(`account no`)) # isin changes over time for 170 account numbers out of 10,794...
+
+id_by_account <- separate_rows(id_by_account, cdp_ISINs, sep=",")  %>%
+  mutate(cdp_ISINs = str_trim(cdp_ISINs, side = "both"))
+
+id_by_account$comp_isin <- compustat_v2_comp_whole$comp_isin[
+  match(id_by_account$cdp_ISINs, compustat_v2_comp_whole$comp_isin)
+]
+
+# how many account no's was taken care of with this
+length(unique(id_by_account$`account no`[!is.na(id_by_account$comp_isin)])) #2075
+
+id_by_account <- separate_rows(id_by_account, cdp_names, sep=",")  %>%
+  mutate(cdp_names = str_trim(cdp_names, side = "both"))
+
+
+# names left to match
+# try only name-matching the ones that aren't isin matched... 
+cdp_names_to_match <- (id_by_account$cdp_names[is.na(id_by_account$comp_isin)]) # 9486 some repeated, 9336 none repeated; 27700
+comp_names_to_match <- unique(compustat_v2_comp_whole$comp_name_cleaned) # 50574 all of them regardless of isin or year... 37680 active ones... if filtering for comp_costat == "A" 
+
+# usage -- when I have an hour, see if this work for searching 8k cdp names in 48k compustat names
+# so cdp_tru_names will be our smaller_df 85 among 8k search was very fast after cleaning ~ 5 seconds... 
+cdp_comp_names <- namematch(id_by_account[is.na(id_by_account$comp_isin),], "cdp_names", 
+                            cdp_names_to_match, comp_names_to_match, "comp") # 2:21-2:33, -12:48, 5:42-5:50 9K in 50K. 
+# some concerns with this are that the ones with many matches e.g., GRP LTD may be matched wrong JPN vs. IND without me knowing it
+# whereas with isin approach first, at least ISIN is very specific to that company at particular time
+# but this strategy is: work from name-match, verify that ISIN (if available) is in cdp_ISIN list (primary + secondaries)
+# then verify that cdp_country matches up with comp_fic, and industry lines up as well... if cdp_sic available.
+
+# cleaning. if the names are very long and the first three to 5 or 7 characters don't match, then remove the match?
+
+# add scores for easy verification
+cdp_comp_names$sim_score_jw <- stringsim(cdp_comp_names$cdp_names, cdp_comp_names$comp_name_match, method = "jw")
+cdp_comp_names$sim_score_cdp_whole <- stringsim(cdp_comp_names$cdp_names, 
+                                                substring(cdp_comp_names$comp_name_match, 1, nchar(cdp_comp_names$cdp_names)), method = "jw")
+cdp_comp_names$sim_score_comp_whole <- stringsim(cdp_comp_names$comp_name_match, substring(cdp_comp_names$cdp_names, 1, nchar(cdp_comp_names$comp_name_match)), method = "jw")
+
+
+# the comp name search within cdp gives us X more matches
+nrow(cdp_comp_names[(cdp_comp_names$sim_score_cdp_whole == 1) | (cdp_comp_names$sim_score_comp_whole == 1) | (cdp_comp_names$sim_score_jw == 1) , ]) #91.7% match, 8699 out of 9486 rows
+# how many unique account numbers does that cover? 
+length(unique(cdp_comp_names$`account no`[cdp_comp_names$sim_score_cdp_whole < 1 & cdp_comp_names$sim_score_comp_whole == 1])) # 31 extra account no matches from trying out comp_whole search within cdp string...
+length(unique(cdp_comp_names$`account no`[(cdp_comp_names$sim_score_cdp_whole == 1) | (cdp_comp_names$sim_score_comp_whole == 1) | (cdp_comp_names$sim_score_jw == 1) ])) #915 additional account no's matched up from 2075 account numbers from isin match in compustat! so that's 2990 account no w compustat information! yay :) up from something like 2613 from my v1 namematching and isin matching algorithms
+
+# manual corrections to namematches
+# https://www.blackrock.com/uk/literature/annual-report/blackrock-smaller-companies-trust-plc-annual-report-2021.pdf this report from smaller co's trust plc references blackrock's global s12 emis in cdp under account number 1875...
+# TechnipFMC PLC is a merger of USA company and France Technip SA so its historical financial vars may inflate vs. France only
+
+# Replace only those that have that cdp name
+cdp_comp_names$comp_name_match[cdp_comp_names$cdp_names == "BLACKROCK"] <- "BLACKROCK SMALLER COMPANYTRUST"
+cdp_comp_names$comp_name_match[cdp_comp_names$cdp_names == "TECHNIP SA"] <- "TECHNIPFMC PLC"
+cdp_comp_names$comp_name_match[cdp_comp_names$cdp_names == "TONGYU"] <- "TONGYU COMMUNICATION INCORPORATED"
+
+# keepers based on my manual verification of initial namematching function
+# these were from my original painstaking manual verification process, 125 adds!
+keep_matches <- c("CHENFENG", "THREE STARS", "INNOLIGHT", "HUAFENG", "DONGSHAN PRECISION", "LNP", "RECREATION LTD", "SCHOTT", "KSB AG", "EZCHIP", "HUAQIN", "FARASIS", "PUIG SL", "TRIUNFO", "TEREOS", "HYDSOFT", "LEOCH", "NINGBO JIAYIN", "TEN PAO", "COSLIGHT", "SUNPLUS", "SAAB", "CJ", "SANIFOAM", "TOKIWA", "CAICA", "LEMTECH", "YACHIYO", "TAI PING", "BUPA", "HUASHENG", "ASYMCHEM INC", "ECLERX", "TAITIEN", "LEVI STRAUSS & CO", "INVESCO LTD", "MLP AG", "NEMAK", "MICROTEK", "GESTAMP", "TORM AS", "HAYS AG", "GREENTECH SA", "LAM SOON", "BOTHHAND", "CHAUCER", "TSUZUKI", "KOLMAR", "TRITEC", "TSANN KUEN", "FU YU", "LADBROKES", "RIKEN CORPORATION", "FINLAYS", "PLEXUS", "SUMMIT", "AZTECH", "COMPUCOM", "AL BABTAIN", "INFINIS", "LEDLINK", "AZELIS", "ISOFTSTONE INC", "FRESH EXPRESS INC", "PAPERLINX LTD", "NEUSOFT COLTD", "PTT", "TECHNICOLOR SA", "WYG", "GTL", "IDEAL JACOBS", "ARPADIS", "HANNSTAR USA", "TEAC", "TRADE ME", "FRENCKEN", "GOLDEN POWER", "BIRLA CARBON", "TOKMANNI", "CLAVISTER", "BERTELSMANN", "TAMRON", "METRO GLOBAL", "SMARTLINK LLC", "ANGLIAN WATER", "MANPOWERGROUP", "CUMMINS INC", "AREVA CI", "EAGA", "IFCI", "JOHN LAING", "NCC", "OCE", "SKF", "KTM", "LANNER ELEC", "NEWTECH", "CNLIGHT", "PNE", "PALADINI", "AES TIETE SA", "ATLAS COPCO", "APPLE INC", "PROBIOTEC", "ENGLEWOOD", "LONGWELL", "TANAKA SEIMITSU", "TRISTAR", "CAMARGO CORREA", "WONDER", "COASIA", "WETHERSPOON", "AEGON", "GLAXOSMITHKLINE", "HAVAS", "ING GROUP", "METSO", "REXAM", "SPICE", "SWISS LIFE", "TESCO", "NITCO LLC", "SABAF", "VODAFONE GROUP", "CARNIVAL GROUP")
+
+
+cdp_comp_names$include <- 0
+cdp_comp_names$include[(cdp_comp_names$sim_score_cdp_whole == 1) | (cdp_comp_names$sim_score_comp_whole == 1) | (cdp_comp_names$sim_score_jw == 1) | cdp_comp_names$cdp_names %in% keep_matches | cdp_comp_names$cdp_names %in% c("BLACKROCK", "TECHNIP SA", "TONGYU")] <- 1
+
+
+# add compustat gvkeys to the id_by_account_no dataframe... 
+# but first add to the cdp_comp_names match
+cdp_comp_names$comp_gvkey <- NA
+
+# the name ones first...
+cdp_comp_names$comp_gvkey[cdp_comp_names$include == 1] <- compustat_v2_comp_whole$comp_gvkey[
+  match(cdp_comp_names$comp_name_match[cdp_comp_names$include == 1], compustat_v2_comp_whole$comp_name_cleaned)
+]
+
+# add company status to the namematching dataframe, so that I can select based on active status or see that one company became inactive over time
+cdp_comp_names$comp_costat <- NA
+cdp_comp_names$comp_costat[cdp_comp_names$include == 1] <- compustat_v2_comp_whole$comp_costat[
+  match(cdp_comp_names$comp_name_match[cdp_comp_names$include == 1], compustat_v2_comp_whole$comp_name_cleaned)
+]
+# add company status to the isin matching dataframe as well
+id_by_account$comp_costat <- NA
+id_by_account$comp_costat[!is.na(id_by_account$comp_isin)] <- compustat_v2_comp_whole$comp_costat[
+  match(id_by_account$comp_isin[!is.na(id_by_account$comp_isin)], compustat_v2_comp_whole$comp_isin)
+]
+
+# manual corrections (again from painstaking manual verification initial check)
+# # GRP LTD needs to be the one in cmp_fic = IND comp_gvkey = 292936, comp_isin = INE137I01015
+cdp_comp_names$comp_gvkey[cdp_comp_names$comp_name_match == "GRP LTD"] <- "292936" 
+# because GRP in CDP is from India and GRP LTD with comp_fic IND has gvkey 292936
+
+# the isin ones next...
+id_by_account$comp_gvkey <- NA
+id_by_account$comp_gvkey[!is.na(id_by_account$comp_isin)] <- compustat_v2_comp_whole$comp_gvkey[
+  match(id_by_account$comp_isin[!is.na(id_by_account$comp_isin)], compustat_v2_comp_whole$comp_isin)
+]
+
+# now I have a gvkey for account numbers! see where there are discrepancies and either fix or ignore
+# stack id_by_account with cdp_comp_names 
+colnames(id_by_account[!is.na(id_by_account$comp_isin),])
+colnames(cdp_comp_names[cdp_comp_names$include == 1,])
+
+# set 1 + set 2 account numbers ==> should be 3015 unique account no's if all separate, non-overlapping lists
+unique(id_by_account$`account no`[!is.na(id_by_account$comp_isin)]) #2075 account no's
+unique(cdp_comp_names$`account no`[cdp_comp_names$include == 1]) #940 account no's
+
+# there are 3639 rows but unique: 2952 account no's, so some of the account no's that were matched by isins were also matched by name? 
+length(unique(c(id_by_account$`account no`[!is.na(id_by_account$comp_isin)], cdp_comp_names$`account no`[cdp_comp_names$include == 1]))) 
+
+# which ones overlap: 63 to be precise, are overlapping account numbers from the isin-match and name-match
+intersect(id_by_account$`account no`[!is.na(id_by_account$comp_isin)], cdp_comp_names$`account no`[cdp_comp_names$include == 1])
+
+# merge the two sets
+gvkey_by_account <- merge(id_by_account[!is.na(id_by_account$comp_isin),], cdp_comp_names[cdp_comp_names$include == 1,],
+      by = c("account no", "cdp_ISINs", "cdp_names", "comp_gvkey", "comp_costat", "comp_isin"), all=TRUE)
+
+# view the overlapping set of gvkeys by account number
+View(gvkey_by_account[gvkey_by_account$`account no` %in% intersect(id_by_account$`account no`[!is.na(id_by_account$comp_isin)], cdp_comp_names$`account no`[cdp_comp_names$include == 1]),
+])
+
+# summarize which ones need to be manually ID'd # need to also merge by year!!!!!!
+gvkey_list <- gvkey_by_account %>%
+  summarise(gvkeys = toString(unique(comp_gvkey, na.rm=TRUE)),
+            .by='account no')
+
+#17 of them have multiple gvkeys, save as "account mergers" but not all of them are mergers
+account_mergers <- unique(gvkey_list$`account no`[grepl(",", gvkey_list$gvkeys)]) 
+
+# print out names associated with accounts associated with multiple gvkeys... 
+# unique(gvkey_by_account$cdp_names[gvkey_by_account$`account no` %in% account_mergers]) 
+
+# view the overlapping set of account numbers with multiple gvkeys each
+View(gvkey_by_account[gvkey_by_account$`account no`%in% account_mergers,])
+
+# view the cdp output associated with those account nunbers with multiple gvkeys
+View(cdp[cdp$`account no` %in% account_mergers,])
+
+# view the compustat dataset associated with the multiple gvkeys
+# View(compustat_v2_comp_whole[compustat_v2_comp_whole$comp_gvkey %in% c("220474", "222111"),]) 
+# View(compustat_v2_comp_whole[compustat_v2_comp_whole$comp_gvkey %in% c("101605", "234117"),]) 
+# View(compustat_v2_comp_whole[compustat_v2_comp_whole$comp_gvkey %in% c("319145", "114657"),]) 
+# View(compustat_v2_comp_whole[compustat_v2_comp_whole$comp_gvkey %in% c("222642", "203944"),]) 
+# View(compustat_v2_comp_whole[compustat_v2_comp_whole$comp_gvkey %in% c("200485", "318465"),]) 
+
+
+# since these change over time, break down gvkey matches by account number AND year!!!! start w summary table
+id_by_account_yr <- cdp %>% ungroup() %>%
+  reframe(cdp_ISINs = toString(unique(cdp_ISIN[!is.na(cdp_ISIN)])),
+          cdp_names = toString(unique(cdp_cleaned_names1[!is.na(cdp_cleaned_names1)])),
+          .by = c(`account no`, cdp_year)) # isin changes over time for 170 account numbers out of 10,794... 
+
+# match by cdp ISIN w comp_isin AND cdp_year w compustat fiscal year
+id_by_account_yr$comp_gvkey[!is.na(cdp$cdp_ISIN)] <- compustat_v2_comp_whole$comp_gvkey[
+  match(
+    paste(id_by_account_yr$cdp_ISIN[!is.na(cdp$cdp_ISIN)], id_by_account_yr$cdp_year[!is.na(cdp$cdp_ISIN)]),
+    paste(compustat_v2_comp_whole$comp_isin, compustat_v2_comp_whole$comp_fyear)
+  )
+]
+
+# match based on cdp_name with cdp_name in the comp namematch table
+id_by_account_yr$comp_gvkey[id_by_account_yr$cdp_ISIN == ""] <- cdp_comp_names$comp_gvkey[
+  match(id_by_account_yr$cdp_names[id_by_account_yr$cdp_ISIN == ""], cdp_comp_names$cdp_names)
+]
+ 
+# how many unique gvkeys are there: 
+length(unique(id_by_account_yr$comp_gvkey)) #2751 matched out of 2927... 
+
+# how many did not get matched appropriately
+remaining_gvkey_set <- gvkey_by_account[!(gvkey_by_account$comp_gvkey %in% unique(id_by_account_yr$comp_gvkey)), ]
+
+# match those gvkeys in the remaining set up with the id_by_account_yr, based on name and/or ISIN
+id_by_account_yr$comp_gvkey[is.na(id_by_account_yr$comp_gvkey)] <- remaining_gvkey_set$comp_gvkey[
+  match(id_by_account_yr$cdp_names[is.na(id_by_account_yr$comp_gvkey)], remaining_gvkey_set$cdp_names)
+]
+ 
+length(unique(id_by_account_yr$comp_gvkey)) #2927! YAYYYYYYY matched out of 2927... 
+length(unique(gvkey_by_account$comp_gvkey)) #2927! YAYYYYYYY matched out of 2927... 
+
+# write to csv just to save
+# write.csv(id_by_account_yr, "preprocessed_data/cdp_comp_isin_namematch_gvkey.csv", row.names=FALSE)
+
+# cdp_account_no = comp_gvkey (takeaway) = name (describe what happened) 
+# 2870 = 013498 gvkey (choose the active namematched one) = CARNIVAL CORPORATION & PLC 
+# 3153 = 201172 pre-2015, 318847 post-2015 (merge incl. year) = CHEIL INDUSTRIES INCORPORATED --> SAMSUNG C&T merged in 2015 
+# 4116 = 017544 = CSR LTD (the Australia one... idk where the cdp GB00... ISIN came from in two years) 
+# 4416 = 210201 (parent) = DELTA ELECTRONICS TAIWAN (TH0 is the Thai subsid of Delta Electronics TW0... filed as subsid in first year, then parent name subseq) 
+# 4835 = 234079 (manually verify mode name and name match) = DOMINO'S PIZZA GROUP PLC 
+# 11638 = 205081 pre-2016, 315591 psot-2016 (merge incl. year) = MEDICLINIC INTERNATIONAL LTD pre-2016, MEDICLINIC INTL PLC post-2016 
+# 13406 = 101556 (the only one with data in 2010-2011) = NORSKE SKOGINDUSTRIER A/S 
+# 14654 = 222111 (look at country and mode cdp name / active comp name) = Petróleo Brasileira SA - Petrobras 
+# 15459 = 234117 (look at country) = REDEIA CORPORACION S A 
+# 15829 = 019565 (look at country) = Rio Tinto (UK)
+# 21284 = 319145 the subsid = restructured in 2015 spinoff created Hansol Holdings Ltd as investment parent (2009-2020 comp-years) and Hansol Paper Co (2013-2016 cdp-years, 2015-2020 comp-years) as key operating subsid  w limited years of overlap... If merger, then use year... (if I merge the subsid financial data w subsid emis data, that reduces the years of overlap by half in this case...)
+# 21459  = 203944 = OI SA (active one, post-restructure)
+# 31723 = 318465 = MANDO / MANDO CORP (has MANDO in its name and is not the holdings co)
+# 34340 = 326566  = GALAXY SURFACTANTS LTD (look at mode name in cdp_names and country)
+# 44839 = 282802 = COSMAX (BTI Inc one based on cdp ISIN match w comp_isin) 
+# 61024 = 282084 = XINGDA INTL HOLDINGS LTD (perplexity ai said CDP Respondent id is not listed for XINDA but listed for XINGDA!)
+# 12128 = 205207 from 2009-2012, 316086 from 2014-2020 (look at the ISIN match by year) = MITAC INTERNATIONAL CORP --> MITAC HOLDINGS Corp (publicly traded) 
+
+# incorporate gvkey updates manually [start by CHECKING THIS tmr]
+id_by_account_yr$comp_gvkey[id_by_account_yr$`account no` == 2870] <- "013498"
+id_by_account_yr$comp_gvkey[id_by_account_yr$`account no` == 3153 & id_by_account_yr$cdp_year < 2015] <- "201172"
+id_by_account_yr$comp_gvkey[id_by_account_yr$`account no` == 3153 & id_by_account_yr$cdp_year >= 2015] <- "318847"
+id_by_account_yr$comp_gvkey[id_by_account_yr$`account no` == 4116] <- "017544"
+id_by_account_yr$comp_gvkey[id_by_account_yr$`account no` == 4416] <- "210201"
+id_by_account_yr$comp_gvkey[id_by_account_yr$`account no` == 4835] <- "234079"
+id_by_account_yr$comp_gvkey[id_by_account_yr$`account no` == 11638 & id_by_account_yr$cdp_year < 2016] <- "205081"
+id_by_account_yr$comp_gvkey[id_by_account_yr$`account no` == 11638 & id_by_account_yr$cdp_year >= 2016] <- "315591"
+id_by_account_yr$comp_gvkey[id_by_account_yr$`account no` == 13406] <- "101556"
+id_by_account_yr$comp_gvkey[id_by_account_yr$`account no` == 14654] <- "222111"
+id_by_account_yr$comp_gvkey[id_by_account_yr$`account no` == 15459] <- "234117"
+id_by_account_yr$comp_gvkey[id_by_account_yr$`account no` == 15829] <- "019565"
+id_by_account_yr$comp_gvkey[id_by_account_yr$`account no` == 21284] <- "319145"
+id_by_account_yr$comp_gvkey[id_by_account_yr$`account no` == 21459] <- "203944"
+id_by_account_yr$comp_gvkey[id_by_account_yr$`account no` == 31723] <- "318465"
+id_by_account_yr$comp_gvkey[id_by_account_yr$`account no` == 34340] <- "326566"
+id_by_account_yr$comp_gvkey[id_by_account_yr$`account no` == 44839] <- "282802"
+id_by_account_yr$comp_gvkey[id_by_account_yr$`account no` == 61024] <- "282084" #274803
+id_by_account_yr$comp_gvkey[id_by_account_yr$`account no` == 12128 & id_by_account_yr$cdp_year < 2013] <- "205207"
+id_by_account_yr$comp_gvkey[id_by_account_yr$`account no` == 12128 & id_by_account_yr$cdp_year >= 2013] <- "316086"
+
+# remove ABG SHIPYARD
+id_by_account_yr$comp_gvkey[id_by_account_yr$`account no` == 55] <- NA
+
+id_by_account_yr_expanded <- id_by_account_yr %>%
+  tidyr::expand(`account no`, cdp_year = 2009:2019) %>%
+  left_join(id_by_account_yr, by = c("account no", "cdp_year")) %>%
+  group_by(`account no`) %>%
+  fill(`cdp_ISINs`, `cdp_names`, `comp_gvkey`, .direction = "downup")
+
+# save again with manual updates, but don't bother to change filename
+write.csv(id_by_account_yr_expanded, "preprocessed_data/cdp_comp_isin_namematch_gvkey.csv", row.names=FALSE)
+
+# now how many unique gvkeys are there in the matched set with account number manual verifications?
+length(unique(id_by_account_yr$comp_gvkey)) #2915 after solidifying re: those 17 account numbers above!
+
+# now have compustat GVKEYS matched to cdp
+cdp_w_gvkey <- cdp %>% merge(id_by_account_yr_expanded[,c("account no", "cdp_year", "comp_gvkey")], by = c("account no", "cdp_year"), all = TRUE) %>% group_by(`account no`) %>% fill("cdp_year", "cdp_name", "cdp_region", "cdp_country", "cdp_activities", "cdp_sectors", "cdp_industries", "cdp_primary_activity", "cdp_primary_sector", "cdp_primary_industry", "cdp_primary_questionnaire_sector", "cdp_primary_ticker", "cdp_ticker", "cdp_primary_isin", "cdp_isin", "cdp_ISIN", "cdp_cleaned_names1", .direction = 'downup')
+
+# save cdp+gvkeys
+write.csv(cdp_w_gvkey, "preprocessed_data/cdp_w_gvkey.csv", row.names=FALSE)
+
+# also save to csv
+write.csv(cdp_comp_names, "preprocessed_data/cdp_comp_names", row.names=FALSE)
+
+# save a list of gvkeys to work with for trucost match
+gvkeys <- unique(cdp_w_gvkey$comp_gvkey) #2914 *no more ABG shipyard
+
+#################################################################################
+# namematching with trucost -- then comes the issue with which source to trust
+#################################################################################
+# rename trucost_v2 columns - only need to do this once
+colnames(trucost_v2_tru_whole)
+map_vec <- c("319407" = "tru_scope1_intensity",
+             "319409" = "tru_scope3_upstream_intensity",
+             "319408" = "tru_scope2_loc_intensity",
+             "319413" = "tru_scope1_absolute",
+             "319414" = "tru_scope2_loc",
+             "319415" = "tru_scope3_upstream",
+             "319522" = "tru_revt",
+             "319550" = "tru_waste_landfill",
+             "319567" = "tru_water_purchased",
+             "326738" = "tru_scope3_downstream_intensity",
+             "326737" = "tru_scope3_downstream_absolute",
+             "368314" = "tru_scope2_market_intensity",
+             "367750" = "tru_scope2_market")
+
+# rename dataframe columns based on above mapping
+trucost_v2_tru_whole <- trucost_v2_tru_whole %>%
+  rename_with(
+    ~{
+      six_digit <- str_extract(.x, "\\d{6}")
+      ifelse(!is.na(six_digit) & six_digit %in% names(map_vec),
+             map_vec[six_digit],
+             .x)
+    }
+  )
+
+# replace names for namematching
+trucost_v2_tru_whole$tru_name_cleaned <- clean_names1(trucost_v2_tru_whole$tru_companyname) # takes 2 minutes for so many names! 4M rows
+
+library(lubridate)
+# Handle periodenddate to fyear assignments!
+View(trucost_v2_tru_whole[,c("tru_periodenddate", "tru_fiscalyear", "tru_fyear_manual")])
+
+# manually edit the date by which to merge the tru w comp!
+trucost_v2_tru_whole$tru_fyear_manual <- case_when(
+  # when the month from the tru_periodenddate is < 6, fyear = year(date) - 1
+  month(trucost_v2_tru_whole$tru_periodenddate) < 6 ~ year(trucost_v2_tru_whole$tru_periodenddate) - 1,
+  # when the month from the tru_periodenddate is >= 6, fyear = fiscalyear or the year from tru_periodenddate
+  month(trucost_v2_tru_whole$tru_periodenddate) >= 6 ~ year(trucost_v2_tru_whole$tru_periodenddate),
+  TRUE ~ as.integer(NA)  # handle any NA or unexpected cases if needed
+)
+
+
+# how many unique cleaned names are there: 11k for cdp, 4.16mil for tru
+# View(cdp[,c("cdp_name", "cdp_cleaned_names1")]) # 11812
+# View(trucost_v2_tru_whole[,c("tru_companyname", "tru_name_cleaned")]) # 1789 names --> trucostv2whole has way more... 4.16Mil names jeeeeeezzzzzz
+
+# low-hanging fruit is just the ones that match gvkey, will merge those separately
+sum(unique(trucost_v2_tru_whole$tru_gvkey[!is.na(trucost_v2_tru_whole$tru_gvkey)]) %in% gvkeys, na.rm=TRUE) # 2574/28759 gvkeys 
+
+# remaining names to match that have blank gvkey in the cdp dataset
+tru_names_to_match <- unique(trucost_v2_tru_whole$tru_name_cleaned[!(trucost_v2_tru_whole$tru_gvkey %in% gvkeys)]) #26k
+# View(tru_names_to_match) #26k
+cdp_names_to_match <- unique(cdp_w_gvkey$cdp_cleaned_names1[is.na(cdp_w_gvkey$comp_gvkey)]) # 8443, which is cheating a bit because I did do a search on the trucost names originally downloaded so that helped!
+
+# search for cdp_names_to_match (smaller vector) in tru_names_to_match (larger vector)
+cdp_tru_names <- data.frame(
+  cdp_cleaned_names1 = cdp_names_to_match,
+  tru_name_match   = NA_character_,  # if these will be character values
+  stringsAsFactors = FALSE
+)
+
+# usage -- when I have an hour, see if this work for searching 8k cdp names in 48k compustat names
+# so cdp_tru_names will be our smaller_df 85 among 8k search was very fast after cleaning ~ 5 seconds... 
+cdp_tru_names <- namematch(cdp_tru_names, "cdp_cleaned_names1", cdp_names_to_match, tru_names_to_match, "tru") # 5:03ish-5:11 8 mins pretty good!
+
+# do the same thing of selecting matches with 1|1|1
+# add scores for easy verification
+cdp_tru_names$sim_score_jw <- stringsim(cdp_tru_names$cdp_cleaned_names1, cdp_tru_names$tru_name_match, method = "jw")
+cdp_tru_names$sim_score_cdp_whole <- stringsim(cdp_tru_names$cdp_cleaned_names1, 
+                                               substring(cdp_tru_names$tru_name_match, 1, nchar(cdp_tru_names$cdp_cleaned_names1)), 
+                                               method = "jw")
+cdp_tru_names$sim_score_tru_whole <- stringsim(cdp_tru_names$tru_name_match, 
+                                               substring(cdp_tru_names$cdp_cleaned_names1, 1, nchar(cdp_tru_names$tru_name_match)), 
+                                               method = "jw")
+
+# how many name-matches does this give us without having to check -- should still check if country etc. matches
+nrow(cdp_tru_names[cdp_tru_names$sim_score_cdp_whole == 1 | cdp_tru_names$sim_score_tru_whole == 1 | cdp_tru_names$sim_score_jw == 1,]) #7816 names matched? out of 8443 = 92% matches with improved namematching algorithm, up 21% matches for trucost_v2!
+
+# which ones to find gvkey matches for
+cdp_tru_names$include <- 0
+cdp_tru_names$include[cdp_tru_names$sim_score_cdp_whole == 1 | cdp_tru_names$sim_score_tru_whole == 1 | cdp_tru_names$sim_score_jw == 1] <- 1
+
+# add trucost gvkey
+cdp_tru_names$tru_gvkey <- NA
+cdp_tru_names$tru_gvkey[cdp_tru_names$include == 1] <- trucost_v2_tru_whole$tru_gvkey[
+  match(cdp_tru_names$tru_name_match[cdp_tru_names$include == 1], trucost_v2_tru_whole$tru_name_cleaned)
+]
+
+# save cdp trucost namematches
+write.csv(cdp_tru_names, "preprocessed_data/cdp_tru_names.csv", row.names=FALSE)
+
+# do the same summary by account number and gvkey with cdp-trucost matches, see if any change over time and which ones they should actually be
+gvkey_by_account_tru <- cdp[,c("cdp_year", "account no", "cdp_cleaned_names1")] %>% 
+  merge(cdp_tru_names[cdp_tru_names$include == 1, 
+                      c("cdp_cleaned_names1", "tru_name_match")])
+
+# how many unique account numbers does that cover?
+length(unique(gvkey_by_account_tru$`account no`[!is.na(gvkey_by_account_tru$tru_name_match)])) # 908 account numbers
+length(unique(gvkey_by_account_tru$tru_name_match[!is.na(gvkey_by_account_tru$tru_name_match)])) # 909 unique trucost names
+
+# get tru_gvkey
+gvkey_by_account_tru$tru_gvkey <- NA
+gvkey_by_account_tru$tru_gvkey[!is.na(gvkey_by_account_tru$tru_name_match)] <- trucost_v2_tru_whole$tru_gvkey[
+  match(gvkey_by_account_tru$tru_name_match[!is.na(gvkey_by_account_tru$tru_name_match)], trucost_v2_tru_whole$tru_name_cleaned)
+]
+
+# more importantly, get tru_institutionid 
+gvkey_by_account_tru$tru_institutionid <- NA
+gvkey_by_account_tru$tru_institutionid[!is.na(gvkey_by_account_tru$tru_name_match)] <- trucost_v2_tru_whole$tru_institutionid[
+  match(gvkey_by_account_tru$tru_name_match[!is.na(gvkey_by_account_tru$tru_name_match)], trucost_v2_tru_whole$tru_name_cleaned)
+] # by tru name match
+gvkey_by_account_tru$tru_institutionid[!is.na(gvkey_by_account_tru$comp_gvkey)] <- trucost_v2_tru_whole$tru_institutionid[
+  match(gvkey_by_account_tru$comp_gvkey[!is.na(gvkey_by_account_tru$comp_gvkey)], trucost_v2_tru_whole$tru_gvkey)
+] # by gvkey from comp name match
+
+# see which account numbers have multiple gvkeys
+View(gvkey_by_account_tru %>% summarise(tru_names = toString(unique(tru_name_match)),
+                                        tru_gvkeys = toString(unique(tru_gvkey)),
+                                        .by=c("account no")))
+
+
+
+
+
+# go through each one and manually correct the gvkeys
+# View(trucost_v2_tru_whole[trucost_v2_tru_whole$tru_gvkey %in% c("027638", "001356"),]) # fine, consistent and changed over time
+# View(trucost_v2_tru_whole[trucost_v2_tru_whole$tru_gvkey %in% c("015708", "027845"),]) # fine, consistent and changed over time
+# View(trucost_v2_tru_whole[trucost_v2_tru_whole$tru_gvkey %in% c("028555", "020315"),]) # fine, consistent and changed over time
+# View(trucost_v2_tru_whole[trucost_v2_tru_whole$tru_gvkey %in% c("179700", "028877"),]) # fine, consistent and changed over time
+# View(trucost_v2_tru_whole[trucost_v2_tru_whole$tru_gvkey %in% c("025389", "008124"),]) # change, below
+# View(trucost_v2_tru_whole[trucost_v2_tru_whole$tru_gvkey %in% c("006268", "010787"),]) # change, below
+# View(trucost_v2_tru_whole[trucost_v2_tru_whole$tru_gvkey %in% c("020692", "006433"),]) # change, below
+# View(trucost_v2_tru_whole[trucost_v2_tru_whole$tru_gvkey %in% c("151282", "014517"),]) # fine, consistent and changed over time
+
+
+# manual changes
+gvkey_by_account_tru$tru_gvkey[gvkey_by_account_tru$`account no` == 7631] <- "008124" # graphics packaging international (the private company, not the public holding company)
+gvkey_by_account_tru$tru_institutionid[gvkey_by_account_tru$`account no` == 7631] <- "4173083" # institutionid
+gvkey_by_account_tru$tru_gvkey[gvkey_by_account_tru$`account no` == 19582] <- "006268" # acquired by Johnson controls
+gvkey_by_account_tru$tru_institutionid[gvkey_by_account_tru$`account no` == 19582] <- "5234450"
+gvkey_by_account_tru$tru_gvkey[gvkey_by_account_tru$`account no` == 32296] <- "020692" # it's the electronics one and not the subsid... and the scope 1 absolute matches there's half-year delay maybe because the trucost end date is 2018-06-30 and it's the same as cdp year 2018
+gvkey_by_account_tru$tru_gvkey[gvkey_by_account_tru$`account no` == 32296]  <- "4967120"
+
+# handle DAIKEN and SHOWA from my initial manual match!
+View(trucost_v2_tru_whole[grepl("DAIKEN", trucost_v2_tru_whole$tru_companyname), ])
+trucost_v2_tru_whole$tru_gvkey[trucost_v2_tru_whole$tru_name_cleaned == "DAIKEN CORP"] <- "102688" # got gvkey from compustat. it's only 1yr data
+
+# for some reason SHOWA didn't show up in the gvkey_by_account_tru, but it is in cdp and does have a trucost match... 
+# wait, that's because we got the gvkey match from compustat? yes
+# cdp$comp_gvkey[cdp$cdp_cleaned_names1 == "SHOWA CORP"] <- "208030" # got gvkey from compustat. it's only 1yr data
+
+# now add gvkey info to the cdp_comp dataset... or the cdp dataset, see if any of those gvkeys are in compustat???
+# fill in with the non-na tru_gvkeys
+# cdp_w_gvkey_tru <- cdp_w_gvkey %>% merge(gvkey_by_account_tru[,c("account no", "cdp_year", "tru_gvkey")], by.x = c("account no", "cdp_year", "comp_gvkey"), by.y = c("account no", "cdp_year", "tru_gvkey"), all=TRUE) # will it just fill in the blanks? no, it added 5k rows
+
+cdp_w_gvkey_tru <- cdp_w_gvkey %>% merge(gvkey_by_account_tru[,c("account no", "cdp_year", "tru_gvkey", "tru_institutionid")], by = c("account no", "cdp_year"), all=TRUE) %>% group_by(`account no`) %>% fill(`tru_gvkey`, `tru_institutionid`, .direction='downup') # this just adds another column w the tru_gvkey, then coalesce w comp_gvkey
+
+cdp_w_gvkey_tru$gvkey_combo <- coalesce(cdp_w_gvkey_tru$comp_gvkey, cdp_w_gvkey_tru$tru_gvkey)
+
+# save as csv
+write.csv(cdp_w_gvkey_tru, "preprocessed_data/cdp_w_gvkey_tru.csv", row.names=FALSE)
+
+# "cdp_cleaned_names1"
+# before: 2614 gvkeys from compustat ISIN + name-matching; 21926 missing gvkey
+# after: 2639 gvkeys from trucost gvkey + name-matching (added 25); 21782 missing gvkey (increased info by ~ 200)
+# after trucostv2!: 3429 gvkeys from trucostv2_whole gvkey + name-matching (added 813, 25 thanks to the trucost merge); 18427 missing gvkey! 
+# now merge again cdp + comp + trucost
+length(unique(cdp_w_gvkey_tru$comp_gvkey)) #2914
+length(unique(cdp_w_gvkey_tru$tru_gvkey)) #906
+length(unique(cdp_w_gvkey_tru$gvkey_combo)) #3820 --> 3801 just one was overlapped... 
+
+# YAY so now we can merge with compustat and trucost!
+gvkeys <- unique(cdp_w_gvkey_tru$gvkey_combo)
+
+
+# CLEAN THE YEARS FIRST!
+
+# 16760 account no SHAFTESBURY and others has NA years in compustat, so need to infer fyear from the comp_datadate!
+compustat_v2_comp_whole$comp_fyear[is.na(compustat_v2_comp_whole$comp_fyear)] <- format(as.Date(compustat_v2_comp_whole$comp_datadate[is.na(compustat_v2_comp_whole$comp_fyear)], format="%m/%d/%y"), "%Y")
+
+
+# handle incorrect compustat fyears using datadates as well
+# manually edit the date by which to merge the tru w comp!
+compustat_v2_comp_whole$fmt_comp_datadate <- as.Date(compustat_v2_comp_whole$comp_datadate, format="%m/%d/%y")
+compustat_v2_comp_whole$comp_fyear_manual <- case_when(
+  # when the month from the comp_datadate is < 6, fyear = year(date) - 1
+  month(compustat_v2_comp_whole$fmt_comp_datadate) < 6 ~ year(compustat_v2_comp_whole$fmt_comp_datadate) - 1,
+  # when the month from the comp_datadate is >= 6, fyear = fiscalyear or the year from comp_datadate
+  month(compustat_v2_comp_whole$fmt_comp_datadate) >= 6 ~ year(compustat_v2_comp_whole$fmt_comp_datadate),
+  TRUE ~ as.integer(NA)  # handle any NA or unexpected cases if needed
+)
+
+#verify
+# compustat_v2_comp_whole %>%
+#   filter(comp_fyear_manual != comp_fyear) %>%
+#   select(comp_gvkey, comp_datadate, comp_fyear_manual, comp_fyear) %>%
+#   View()
+
+# how much data for cdp respondents do we lose out on if we only take period-end-date of dec year
+trucost_v2_tru_whole$tru_month <- format(as.Date(trucost_v2_tru_whole$tru_periodenddate, format="%Y-%m-%d"), "%m")
+compustat_v2_comp_whole$comp_month <- format(as.Date(compustat_v2_comp_whole$comp_datadate, format="%m/%d/%y"), "%m")
+
+# first merge compustat... then trucost
+cdp_comp <- merge(cdp_w_gvkey_tru,
+                  compustat_v2_comp_whole,
+                  by.x = c("gvkey_combo", "cdp_year"), 
+                  by.y = c("comp_gvkey", "comp_fyear_manual"), # so comp_fyear_manual turned into cdp_year
+                  all.x=TRUE) # 546 with all to 118 with just cdp
+
+# cdp_tru <- merge(cdp_w_gvkey_tru,
+#                  trucost_v2_tru_whole,
+#                  by.x = c("gvkey_combo", "cdp_year", "tru_institutionid"), 
+#                  by.y = c("tru_gvkey", "tru_fyear_manual", "tru_institutionid"),
+#                  all=TRUE) # 493314
+
+# Merge by year and gvkey
+cdp_tru_gvkey <- merge(cdp_w_gvkey_tru[!is.na(cdp_w_gvkey_tru$gvkey_combo),] %>% select(-c("tru_institutionid")), 
+                       trucost_v2_tru_whole[!is.na(trucost_v2_tru_whole$tru_gvkey),],
+                       by.x = c("gvkey_combo", "cdp_year"),
+                       by.y = c("tru_gvkey", "tru_fyear_manual"),
+                       all.x = TRUE) # 42331 rows
+
+# Merge by year and institution id (takes about 5 minutes?)
+cdp_tru_instid <- merge(cdp_w_gvkey_tru[!is.na(cdp_w_gvkey_tru$tru_institutionid),] %>% select(-c("tru_gvkey")),
+                        trucost_v2_tru_whole, # none of them have na instutionid
+                        by.x = c("tru_institutionid", "cdp_year"),
+                        by.y = c("tru_institutionid", "tru_fyear_manual"),
+                        all.x = TRUE) # 12049 obs
+cdp_other <- cdp_w_gvkey_tru[is.na(cdp_w_gvkey_tru$tru_gvkey)|
+                               is.na(cdp_w_gvkey_tru$tru_institutionid)|
+                               is.na(cdp_w_gvkey_tru$gvkey_combo),]
+  
+# Stack and deduplicate, e.g. (you may need to select/arrange columns as needed)
+cdp_tru <- bind_rows(cdp_tru_gvkey, cdp_tru_instid, cdp_other) %>% distinct() # 145370 obs
+
+
+# add compustat, comp_gvkey becomes gvkey_combo
+cdp_tru_comp <- merge(cdp_tru %>% select(-c("comp_gvkey")), 
+                      compustat_v2_comp_whole,
+                      by.x = c("gvkey_combo", "cdp_year"), 
+                      by.y = c("comp_gvkey", "comp_fyear_manual"), # so comp_fyear_manual turned into cdp_year
+                      all.x=TRUE) # 145483!
+
+write.csv(cdp_tru_comp, "preprocessed_data/cdp_tru_comp.csv", row.names=FALSE)
+
+
+
+# examples of large discrepancies
+tru_cdp_compare <- cdp_tru_comp[!is.na(cdp_tru_comp$cdp_scope1) & cdp_tru_comp$cdp_scope1 > 0 &
+                                !is.na(cdp_tru_comp$tru_scope1_absolute) & cdp_tru_comp$tru_scope1_absolute > 0,
+                                c("account no", "cdp_year", "cdp_scope1", "tru_scope1_absolute", "comp_revt")] %>%
+  mutate(prop_diff = abs(tru_scope1_absolute - cdp_scope1)/cdp_scope1)
+
+View(tru_cdp_compare)
+
+nrow(tru_cdp_compare[tru_cdp_compare$prop_diff > 1 & tru_cdp_compare$cdp_scope1 > 0 & tru_cdp_compare$tru_scope1_absolute > 0,])/ nrow(tru_cdp_compare[ tru_cdp_compare$cdp_scope1 > 0 & tru_cdp_compare$tru_scope1_absolute > 0,]) # down to 12% of the non-zero entries being > 100% off.
+
+# how much missing data would trucost help fill in re: emissions?
+nrow(cdp_tru_comp[is.na(cdp_tru_comp$cdp_scope1)|cdp_tru_comp$cdp_scope1 == 0 & !is.na(cdp_tru_comp$tru_scope1_absolute),]) # 1338 are filled in by trucost, 111,641 w Trucost other, 111645 after fyear_manual fix, 107153 just within cdp
+nrow(cdp_tru_comp[!is.na(cdp_tru_comp$tru_scope1_absolute),]) # 8689 rows have trucost scope 1 absolute emissions reported or adjusted (however they do it) 15% of those add additional value to the cdp data, 125,542 w Trucost other, 125,557 after fyear_manual fix, 30744 within cdp cohort
+nrow(cdp_tru_comp[!is.na(cdp_tru_comp$cdp_scope1) & cdp_tru_comp$cdp_scope1> 0 & !is.na(cdp_tru_comp$tru_scope1_absolute),]) # 8689 rows have trucost scope 1 absolute emissions reported or adjusted (however they do it) # 13,901 w Trucost overlap and cdp, back down to 13912 with fyear_manual fix, 15635 are nonzero 
+
+
+# Count NaN values in each column using dplyr
+nan_counts_dplyr <- cdp_tru_comp %>%
+  ungroup() %>%
+  group_by(cdp_year) %>%
+  summarise(across(everything(), ~(1-sum(is.na(.))/n()))) # non-NA values actually!
+print(nan_counts_dplyr)
+
+
+```
+
+# deleted cdp_comp_tru need to reconsider matching comp and tru names and gvkeys
+```{r}
+
+
+# DON"T NEED TO EXPAND COMPUSTAT AND TRUCOST. THEY ONLY HAVE WHATEVER DATA THEY HAVE!
+
+# # expand compustat and trucost before merging -- by their nonNA identifiers! comp_gvkey, tru_institutionid
+# compustat_v2_comp_whole_expanded <- compustat_v2_comp_whole %>%
+#   tidyr::expand(`comp_gvkey`, comp_fyear_manual = 2009:2019) %>%
+#   left_join(compustat_v2_comp_whole, by = c("comp_gvkey", "comp_fyear_manual")) 
+
+
+# DON"T DO THIS TAKES TOO LONG AND DON"T NEED TO MAKE COMP_TRU FIRST
+# JUST MERGE CDP_COMP then CDP_COMP_TRU w TRU_INSTITUTIONID!# 
+# trucost_v2_tru_whole_expanded <- trucost_v2_tru_whole %>%
+#   tidyr::expand(`tru_institutionid`, tru_fyear_manual = 2009:2019) %>%
+#   left_join(trucost_v2_tru_whole, by = c("tru_institutionid", "tru_fyear_manual")) %>% 
+#   group_by(tru_institutionid) %>% fill("tru_gvkey", "tru_companyname", "tru_companytype", "tru_status", "tru_simpleindustry", "tru_incorporation_country", "tru_country", "tru_yearfounded", "tru_institutionid", "tru_name_cleaned", .direction='downup') # I hope this doesn't crash the kernel :||| 16million rows... 
+
+
+# # first merge compustat and trucost (but this only has nonNA gvkeys.... )
+# comp_tru <- merge(compustat_v2_comp_whole[!is.na(compustat_v2_comp_whole$comp_gvkey),], 
+#                   trucost_v2_tru_whole[!is.na(trucost_v2_tru_whole$tru_gvkey),], 
+#                   # & trucost_v2_tru_whole$tru_gvkey %in% gvkeys doesn't have to be if there's a comp_tru match
+#                   by.x = c("comp_gvkey", "comp_fyear_manual"), by.y = c("tru_gvkey", "tru_fyear_manual"), all=TRUE) 
+# # 493314 obs of 61 vars across all gvkey matches when updated to tru_fyear_manual from tru_fiscalyear and comp_fyear_manual
+# # 496969 obs of 57 vars across all gvkey matches
+# # 41112 obs %in% gvkeys, 3819 gvkeys only with trucost gvkey matches, didn't name-match compustat and trucost... 
+# # jeezessesseses more workbut good work... eek
+# # 23,391 rows with overlapping data... this should carry over when merging with cdp_w_gvkey_tru
+# 
+# # save compustat-trucost merge as csv
+# write.csv(comp_tru, "preprocessed_data/comp_tru.csv", row.names=FALSE)
+
+# View(comp_tru[!is.na(comp_tru$comp_datadate) & !is.na(comp_tru$tru_periodenddate),c("comp_gvkey", "comp_datadate", "tru_periodenddate", "comp_fyear", "comp_month", "tru_month")])
+
+# # check if companies usually submit around same time to their financial and emissions data providers
+# View(comp_tru[!is.na(comp_tru$comp_datadate) & !is.na(comp_tru$tru_periodenddate),c("comp_gvkey", "comp_datadate", "tru_periodenddate")])
+
+# # # merge cdp w COMPUSTAT to see how many rows actually have data
+# # cdp_comp_tru <- merge(cdp_w_gvkey_tru, 
+# #                       comp_tru, 
+# #                       by.x = c("gvkey_combo", "cdp_year"), 
+# #                       by.y = c("comp_gvkey", "comp_fyear_manual"), # so comp_fyear_manual turned into cdp_year
+# #                       all=TRUE) 
+# # 510729 observations of 130 vars in or not in gvkeys # additional bc of the fyear manual!
+# # 514385 obs of 125 vars in or not in gvkeys # same 3839 non-NA account no's with gvkeys
+# # 58528 obs, 3819 non-NA gvkeys in gvkeys... and 3839 non-NA account no's with gvkeys
+# # there's NA year
+# 
+# # after fixing missing year and merging all gvkeys in comp & tru, 12439 rows have compustat and trucost names assoc w cdp account no!
+# 
+# nrow(cdp_comp_tru[!is.na(cdp_comp_tru$cdp_scope1) & !is.na(cdp_comp_tru$tru_scope1_absolute),]) # 7239 --> 7351 rows now with cdp + tru emis added 112 rows with trucost data from namematch --> now up to 10,575 rows!!!!! WOOOOOOHOOOOOOO --> now up to 13,901! amazing. --> back down to 13912 with fyear_manual
+# nrow(cdp_comp_tru[!is.na(cdp_comp_tru$cdp_scope1) & !is.na(cdp_comp_tru$tru_scope1_absolute) & !is.na(cdp_comp_tru$comp_revt),]) # 7324 have cdp + comp + tru, now up to 8785 rows, now up to 10,479 with improved name-match algorithm!, 10,487 with fyear_manual
+# 
+# nrow(cdp_comp_tru[!is.na(cdp_comp_tru$comp_revt)|!is.na(cdp_comp_tru$tru_revt),]) # 14442 out of 35674 rows --> now 28529 / 49761 more than half by keeping all = TRUE. now 496,036 rows with comp/tru revt, 492377 with fixed fyear_manual comp/tru revt.
+# 
+# nrow(cdp_comp_tru[is.na(cdp_comp_tru$cdp_scope1) & !is.na(cdp_comp_tru$cdp_filename) & !is.na(cdp_comp_tru$tru_scope1_absolute),]) # 2127 additional rows of scope 1 data... where cdp_filename is missing. I want to know how trucost got this extra emissions data, now 2377 rows, to 2395 after fyear_manual fix
+# 
+# # first, check if there are any multiple account numbers per GVKEY... if so it will be hard to just ffill, bfill the account numbers
+# account_no_by_gvkey <- cdp_comp_tru[!is.na(cdp_comp_tru$gvkey_combo),] %>%
+#   summarise(account_nos = toString(unique(`account no`[!is.na(`account no`)])),
+#             .by = gvkey_combo)
+# # yes. 146 have some sort of subsidiary relationship... --> now only 46 have multiple account numbers associated with the same gvkey
+# 
+# # 31 account numbers have multiple gvkeys... this is also troubling. cdp's CENTERRA GOLD --> CENTERRA GOLD INC got matched with AVIVA PLC. How?
+# gvkey_by_account_no <- cdp_comp_tru[!is.na(cdp_comp_tru$`account no`),] %>%
+#   summarise(gvkeys = toString(unique(gvkey_combo[!is.na(gvkey_combo)])),
+#             .by = `account no`)
+# 
+# write.csv(cdp_comp_tru, "preprocessed_data/cdp_comp_tru.csv", row.names=FALSE) # 7 more rows than before (e.g., cdp_plus_wrds dataset), and 8 more variables than before, but with confidence that I (1) searched the entire compustat and trucost databases between 2009-2020, (2) matched ISINS, GVKEYS, AND NAMES to the best of my ability, even through manual verification, and (3) PROPERLY matched ISINS and NAMES, and PROPERLY constructed dataset from ground up: cdp components, then searching comp_isins within cdp_isins, getting gvkey, matching comp_names by searching for cdp_name snippets in comp_conml, then matching trucost remaining gvkey/names using name-search of tru_name(cleanedv2 - clearing up PLC, LTD, AS, AG, etc.) in cdp_name(cleanedv2 "clean_names1") then adding a gvkey col to cdp: comp_gvkey, and using it to merge comp, then trucost by gvkey AND fiscal year.
+# # now we save all 500k rows because of compustat and trucost gvkeys and "non-CDP" company information, so what sets cdp respondents apart from other companies... 
+# # to merge with Orbis, will need to fill in the ISINs
+
+
+# # wait, where's the NA year coming from again!? fixed. it was because I forgot to update the comp_fyear_manual when merging with cdp_w_gvkey_tru
+# sum(is.na(cdp_tru_comp$cdp_year)) #35392??
+# View(cdp_tru_comp[is.na(cdp_tru_comp$cdp_year),])
+# unique(cdp_tru_comp$gvkey_combo[is.na(cdp_tru_comp$cdp_year)])
+```
+
+# adding BERT handling respondent type and datadate
+```{r}
+
+# check merge between cdp_comp_tru and bert
+# for those with account no and cdp_year
+cdp_tru_comp_bert <- merge(cdp_tru_comp, base_KPI_labels_v3, by = c("account no", "cdp_year"), by.y = c("bert_account_no", "bert_cdp_year"), all=TRUE) # 154469
+
+# # Convert variables to Date if needed
+cdp_tru_comp_bert <- cdp_tru_comp_bert %>%
+  mutate(
+    fmt_cdp_submitted_date = as.Date(cdp_submitted_date),
+    fmt_comp_datadate = as.Date(comp_datadate, format = "%m/%d/%y"),
+    fmt_tru_periodenddate = as.Date(tru_periodenddate)
+  )
+
+View(cdp_tru_comp_bert[,c("account no", "cdp_year", "fmt_cdp_submitted_date", "fmt_tru_periodenddate", "cdp_scope1", "tru_scope1_absolute")]) # "cdp_submitted_date", comp_datadate", "tru_periodenddate", "fmt_cdp_submitted_date", "fmt_comp_datadate",
+
+
+write.csv(cdp_tru_comp_bert[!is.na(cdp_tru_comp_bert$`account no`),], "preprocessed_data/cdp_tru_comp_bert.csv", row.names=FALSE)
+# for those with multiple respondents, does the rest of the cdp_comp_tru info get filled out? YES!
+```
+
+# distinct
+```{r}
+sum(is.na(cdp_tru_comp_bert$`account no`))
+View(cdp_tru_comp_bert[is.na(cdp_tru_comp_bert$`account no`),])
+sum(cdp_tru_comp_bert$`account no`=="NA")
+miss_var_summary(cdp_tru_comp_bert)
+
+```
+
+
+# respondent summaries
+```{r}
+# which ones in which years had both respondents
+table <- base_KPI_labels_v3[,c("bert_respondent", "bert_account_no", "bert_year")] %>% summarise(respondents = toString(unique(bert_respondent)),.by = c("bert_account_no", "bert_year"))
+
+# which account numbers have both respondents in their names
+responded_to_both <- table %>%
+  filter(grepl(",", respondents))
+
+# checked that account number35211 in 2012 had nonmissing cdp information for BOTH inv & sc rows BERT
+
+# so on average, each account has about 1 year where they responded to both survey types....
+# > sum(is.na(cdp_comp_tru_bert$bert_maxcol))
+# [1] 436272
+# total rows minus those where bert is NA = 125873
+# divide by number of unique account numbers 10793 gives 11.66, and there are 11 years of data...
+
+# then it'll be by respondent as well... account,year,respondent 
+# do a little investigation with investor and supply chain... 
+# stylized facts section about inv vs. sc and then just say why I ended up combining the scores! (e.g., identical responses in each, or differences already captured by differences in industry, e.g., fully explained... 
+# perplexitypro suggested NOT to take mean scores between inv & sc bc that reduces data variability
+
+###########################################################################################################
+# went back up to isin+namematch to correct tru_fiscalyear --> tru_fyear_manual and comp_fyear to -->_manual
+###########################################################################################################
+
+# cdp_comp_tru_bert$cdp_submitted_date
+# cdp_comp_tru_bert$comp_datadate
+# cdp_comp_tru_bert$tru_periodenddate
+# 
+# # # Convert variables to Date if needed
+# cdp_comp_tru_bert <- cdp_comp_tru_bert %>%
+#   mutate(
+#     fmt_cdp_submitted_date = as.Date(cdp_submitted_date),
+#     fmt_comp_datadate = as.Date(comp_datadate, format = "%m/%d/%y"),
+#     fmt_tru_periodenddate = as.Date(tru_periodenddate)
+#   )
+
+# # view date conversions to check
+# View(cdp_comp_tru_bert[,c("account no", "cdp_year", "fmt_cdp_submitted_date", "fmt_tru_periodenddate", "cdp_scope1", "tru_scope1_absolute")]) # "cdp_submitted_date", comp_datadate", "tru_periodenddate", "fmt_cdp_submitted_date", "fmt_comp_datadate", 
+# 
+# # from this I gather that if the month of tru_periodenddate < 6, then look for the best match from next year's periodenddate!, e.g., 2013-03-31 for 2013 is not correct. Should be 2014-03-31 reporting on 2013 values! but we can check this! e.g., scope 1 emissions values!
+
+# 
+# # Gather dates into long format for plotting
+# date_long <- cdp_comp_tru_bert %>%
+#   select(fmt_cdp_submitted_date, fmt_comp_datadate, fmt_tru_periodenddate) %>%
+#   pivot_longer(cols = everything(), 
+#                names_to = "date_type", 
+#                values_to = "date") %>%
+#   filter(!is.na(date))
+# 
+# # Plot histogram with dates as x and fill by date_type
+# ggplot(date_long, aes(x = date, fill = date_type)) +
+#   geom_histogram(position = "identity", alpha = 0.5, bins = 30) +
+#   labs(title = "Timeline Distribution of Dates",
+#        x = "Date",
+#        y = "Count",
+#        fill = "Date Type") +
+#   theme_minimal()
+
+
+###########################################################################################################
+# other information to fill in
+###########################################################################################################
+
+# COUNTRY
+missing_cdp_country <- cdp_tru_comp_bert %>%
+  filter(is.na(cdp_country), !is.na(`account no`)) %>%
+  pull(`account no`) %>%
+  unique()
+
+length(missing_cdp_country) # 221 account numbers with missing country information in CDP
+
+filled_from_comp_or_tru <- cdp_tru_comp_bert %>%
+  filter(
+    is.na(cdp_country),                             # CDP country is missing
+    !is.na(`account no`),                           # Account number exists
+    !is.na(comp_fic) | !is.na(tru_country) | !is.na(tru_incorporation_country)   
+    # At least Compustat or Trucost industry is present
+  ) %>%
+  pull(`account no`) %>%
+  unique()
+
+length(filled_from_comp_or_tru) # 20 account numbers (out of 221 with missing country) can be filled with compustat or trucost information. but eventually may need to do a lookup country, industry tool! and when I do, I want to find out the LIST of countries and industries in which the account (specific company subsidiary if applicable) operates.
+
+
+# INDUSTRY
+filled_from_comp_or_tru <- cdp_comp_tru_bert %>%
+  filter(
+    is.na(cdp_industries),                          # CDP industry is missing
+    !is.na(`account no`),                           # Account number exists
+    !is.na(comp_sic) | !is.na(tru_simpleindustry)   # At least Compustat or Trucost industry is present
+  ) %>%
+  pull(`account no`) %>%
+  unique()
+
+length(filled_from_comp_or_tru) # 1130 account numbers can be filled with industry information from compustat and trucost! this is pretty good...  1/4
+
+missing_cdp_industry <- cdp_comp_tru_bert %>%
+  filter(is.na(cdp_industries), !is.na(`account no`)) %>%
+  pull(`account no`) %>%
+  unique()
+
+length(missing_cdp_industry) # 8111 account numbers are missing industry information
+
+###########################################################################################################
+# comparing KPIs between investor and supply chain respondent types
+###########################################################################################################
+
+# hist(cdp_comp_tru_bert$bert_netzero_reduction_label_reduction_sum[cdp_comp_tru_bert$bert_respondent == "investor"])
+# hist(cdp_comp_tru_bert$bert_netzero_reduction_label_reduction_sum[cdp_comp_tru_bert$bert_respondent == "supply_chain"])
+
+# thanks perplexity gpt
+plot_grouped_histograms <- function(df, var) {
+  
+  pdf(paste0("report/figures/hist_respondent_type_", var, ".pdf"))
+  # Ensure the column is numeric, else convert or exit
+  if (!is.numeric(df[[var]])) {
+    warning(paste(var, "is not numeric. Skipping..."))
+    return(invisible(NULL))
+  }
+  print(ggplot(df, aes(x = .data[[var]], fill = bert_respondent)) +
+    geom_histogram(alpha = 0.7, bins = 30, position = "identity") +
+    facet_wrap(~ bert_respondent, ncol = 2, scales = "free_y",
+               labeller = as_labeller(c("investor" = "Investor", "supply_chain" = "Supply Chain"))) +
+    labs(title = var, x = var, y = "Count") +
+    theme_minimal() +
+    theme(legend.position = "none"))
+  dev.off()
+  
+}
+
+# function 
+# Example use for one variable
+# plot_grouped_histograms(base_KPI_labels_v3, "bert_netzero_reduction_label_reduction_sum")
+kpi_vars <- setdiff(names(base_KPI_labels_v3), "bert_respondent")
+kpi_vars <- Filter(function(x) is.numeric(base_KPI_labels_v3[[x]]), kpi_vars)
+# run on all kpi_vars
+lapply(kpi_vars, function(var) print(plot_grouped_histograms(base_KPI_labels_v3, var)))
+
+
+# summarize number of accounts and mean KPIs by respondent/year
+# View(
+# kpi_by_respondent_type <- base_KPI_labels_v3 %>%
+#   summarise(
+#     n_accounts = n_distinct(bert_account_no),
+#     across(where(is.numeric), ~mean(.x, na.rm = TRUE), .names = "mean_{col}"),
+#     .by = c(bert_respondent)
+#   ))
+
+# in 2019, only 875 account no's responded to both inv & sc... 
+
+#among the account numbers that responded to both surveys, which ones responded DIFFERENTLY in some aspects, and which aspects were different?
+
+# thanks PerplexityPro
+# Step 1: Pivot to long format (if not already)
+long_df <- base_KPI_labels_v3 %>%
+  pivot_longer(
+    cols = -c(bert_account_no, bert_year, bert_respondent),
+    names_to = "variable",
+    values_to = "value"
+  )
+
+# Step 2: Filter accounts with both respondent types per year
+wide_df <- long_df %>%
+  pivot_wider(
+    names_from = bert_respondent,
+    values_from = value
+  ) %>%
+  filter(!is.na(investor) & !is.na(supply_chain)) # keep pairs only
+
+# Step 3: Compute differences and filter by nonzero
+differences_df <- wide_df %>%
+  mutate(inv_minus_sc = investor - supply_chain) %>%
+  filter(inv_minus_sc != 0)
+
+# now I want to visualize what's the range of differences for each variable AND label how many account numbers there were who responded to both types of survey and had differences in that variable
+# thanks perplexity gpt
+plot_histogram_differences <- function(df, var) {
+  # Filter only nonzero differences
+  df_nonzero <- df[df$variable == var & df$inv_minus_sc != 0,]
+  
+  # Compute counts for subtitle
+  n_accounts <- n_distinct(df_nonzero$bert_account_no)
+  n_years <- n_distinct(df_nonzero$bert_year)
+  n_acctyr_obs <- nrow(df_nonzero) #n_distinct(df_nonzero$bert_account_no, df_nonzero$bert_year)
+  
+  out_path <- paste0("report/figures/hist_diff_inv_minus_sc_", var, ".pdf")
+  pdf(out_path)
+  
+  print(
+    ggplot(df_nonzero, aes(x = inv_minus_sc)) +
+      geom_histogram(alpha = 0.7, bins = 30, position = "identity") +
+      labs(
+        title = paste0("Investor minus Supply Chain for those responding to both", "\nnaccts = ", n_accounts, ", nyear = ", n_years, ", nacctyr = ", n_acctyr_obs),
+        x = paste0("Difference (Investor - Supply Chain) for ", var),
+        y = "Count"
+      ) +
+      theme_minimal()
+  )
+  dev.off()
+}
+
+# function 
+# Example use for one variable
+# plot_histogram_differences(differences_df, "bert_netzero_reduction_label_reduction_sum")
+# plot differences between inv and sc for all kpi variables:
+kpi_vars <- unique(differences_df$variable)
+lapply(kpi_vars, function(var) print(plot_histogram_differences(differences_df, var)))
+
+
+# table %>%
+#   filter(grepl(",", respondents)) %>%
+#   summarise(n_accounts = n_distinct(bert_account_no), .by = bert_year)
+
+# what's the respondent breakdown over time
+respondent_breakdown <- table %>%
+  mutate(
+    respondent_type = case_when(
+      grepl("investor", respondents, ignore.case = TRUE) &
+        grepl("supply_chain", respondents, ignore.case = TRUE) ~ "both",
+      grepl("investor", respondents, ignore.case = TRUE) & !grepl("supply_chain", respondents, ignore.case=TRUE)  ~ "inv_only",
+      grepl("supply_chain", respondents, ignore.case = TRUE) & !grepl("investor", respondents, ignore.case=TRUE) ~ "sc_only",
+      TRUE ~ "other"
+    )
+  ) %>%
+  summarise(n_accounts = n_distinct(bert_account_no), .by = c(bert_year, respondent_type))
+
+
+# visualize the respondent breakdown over time 
+# save as pdf
+pdf("report/figures/cdp_summary_respondent_breakdown.pdf")
+ggplot(respondent_breakdown, 
+       aes(x = factor(bert_year), 
+           y = n_accounts, 
+           fill = respondent_type)) +
+  geom_col(position = "stack") +
+  labs(
+    x = "Year",
+    y = "Number of Accounts",
+    fill = "Respondent Type",
+    title = "CDP Accounts by Respondent Type Over Time"
+  ) +
+  theme_minimal(base_size = 14)
+dev.off()
+# could go back to extraction and note whether the response came from inv or sc (or both in 2019) or could just keep the text as filename, comma-separated responses
+      # is it a shock when cdp changed reporting system to automatically share all investor data with supply chain recipients? did some start or stop reporting bc of this?
+
+```
+
+# vismis
+```{r}
+visualize <- cdp_comp_tru_bert %>%
+  mutate(across(where(is.numeric), ~na_if(., 0))) ## Convert zeros to NA if needed
+
+# Plot with custom fill palette by data source
+library(naniar)
+library(dplyr)
+library(patchwork) # for combining plots
+
+# Define variables by category and source
+# cdp
+cdp_emis_vars <- c("cdp_scope1",  "cdp_scope2", "cdp_scope2_loc", "cdp_scope2_market", "cdp_scope3_upstream", "cdp_scope3_downstream")  # each source separately
+cdp_veri_vars <- c("cdp_verification_s1_percent", "cdp_verification_s1_standard", "cdp_verification_s1_quality", "cdp_verification_s2_percent", "cdp_verification_s2_standard", "cdp_verification_s2_quality")
+cdp_targ_vars <- c("cdp_active_target", "cdp_active_target_logit", "cdp_science_based_absolute_target", "cdp_science_based_intensity_target_logit", "cdp_science_based_intensity_target", "cdp_science_based_intensity_target_logit", "cdp_absolute_target_comment", "cdp_intensity_target_comment", "cdp_absolute_target_scope", "cdp_intensity_target_scope", "cdp_why_no_target")
+cdp_init_vars <- c("cdp_reduction_initiatives", "cdp_initiative_type", "cdp_initiative_details", "cdp_payback_period", "cdp_why_no_initiatives","cdp_initiative_type_process_efficiency","cdp_initiative_type_low_carbon_installation","cdp_initiative_type_building_energy_efficiency","cdp_initiative_type_low_carbon_purchase","cdp_initiative_type_behavioral_change","cdp_initiative_type_transportation","cdp_initiative_type_other","cdp_initiative_type_NA")
+cdp_just_vars <- c("cdp_change_reason","cdp_change_dir","cdp_change_detail","cdp_change_%","cdp_change_mtco2e","cdp_excluded_sources","cdp_excluded_reason")
+cdp_loc_vars <- c("cdp_region", "cdp_country")
+cdp_ind_vars <- c("cdp_activities", "cdp_sectors", "cdp_industries", "cdp_primary_activity", "cdp_primary_sector", "cdp_primary_industry", "cdp_primary_questionnaire_sector")
+cdp_name_vars <- c("cdp_name")
+
+# Compustat
+comp_name_vars <- c("comp_conm")
+comp_loc_vars <- c("comp_fic", "comp_idbflag") # international, domestic, or both
+comp_ind_vars <- c("comp_sic")
+comp_fin_vars <- c("comp_act", "comp_aqc", "comp_at", "comp_capx", "comp_ceq", "comp_ch", "comp_dltt", "comp_ebit", "comp_ebitda", "comp_eiea", "comp_emp", "comp_lct", "comp_lt", "comp_opprft", "comp_revt", "comp_seq", "comp_teq", "comp_tx", "comp_epsincon", "comp_epsexcon")
+
+# Trucost
+tru_name_vars <- c("tru_companyname")
+tru_loc_vars <- c("tru_country", "tru_incorporation_country")
+tru_ind_vars <- c("tru_simpleindustry")
+tru_emis_vars <- c("tru_scope1_absolute", "tru_scope1_intensity", "tru_scope3_upstream_intensity", "tru_scope2_loc_intensity", "tru_scope2_loc", "tru_scope3_upstream", "tru_scope3_downstream_intensity", "tru_scope3_downstream_absolute", "tru_scope2_market_intensity", "tru_scope2_market")
+tru_env_vars <- c("tru_waste_landfill", "tru_water_purchased")
+tru_fin_vars <- c("tru_revt")
+
+# ClimateBERT
+bert_lang_vars <- c("bert_nchar_sum", "bert_prop_filled", "bert_percent_specificity", "bert_environmental_claims_label_yes_sum", "bert_climate_commitment_label_yes_sum", "bert_netzero_reduction_label_reduction_sum", "bert_netzero_reduction_label_net-zero_sum", "bert_climate_sentiment_label_opportunity_sum", "bert_climate_sentiment_label_risk_sum", "bert_tcfd_label_strategy_sum", "bert_tcfd_label_risk_sum", "bert_tcfd_label_metrics_sum", "bert_tcfd_label_governance_sum", "bert_transition_label_LABEL_0_sum", "bert_transition_label_LABEL_2_sum", "bert_renewable_label_LABEL_1_sum") 
+# Transition LEVEL_0 (Transition), LEVEL_1 (neutral/none), LEVEL_2 (Physical) 
+
+# Create missingness upset plots by category
+p_emis <- gg_miss_upset(visualize %>% select(c(cdp_emis_vars, tru_emis_vars)),
+                        nsets = length(c(cdp_emis_vars, tru_emis_vars)))
+
+p_loc <- gg_miss_upset(visualize %>% select(all_of(c(cdp_loc_vars, comp_loc_vars, tru_loc_vars))), 
+                            nsets = length(c(cdp_loc_vars, comp_loc_vars, tru_loc_vars)))
+
+p_ind <- gg_miss_upset(visualize %>% select(all_of(c(cdp_ind_vars, comp_ind_vars, tru_ind_vars))), 
+                            nsets = length(c(cdp_ind_vars, comp_ind_vars, tru_ind_vars)))
+
+
+p_name <- gg_miss_upset(visualize %>% 
+                          select(all_of(c(cdp_name_vars, comp_name_vars, tru_name_vars))),
+                        nsets = length(c(cdp_name_vars, comp_name_vars, tru_name_vars)))
+
+p_fin <- gg_miss_upset(visualize %>% 
+                          select(all_of(c(tru_fin_vars, comp_fin_vars))),
+                        nsets = length(c(tru_fin_vars, comp_fin_vars)))
+
+p_init <- gg_miss_upset(visualize %>% select(all_of(cdp_init_vars)), 
+                               nsets = length(cdp_init_vars))
+
+p_targ <- gg_miss_upset(visualize %>% select(all_of(cdp_targ_vars)), 
+                               nsets = length(cdp_targ_vars))
+p_veri <- gg_miss_upset(visualize %>% select(all_of(cdp_veri_vars)), 
+                               nsets = length(cdp_veri_vars))
+p_just <- gg_miss_upset(visualize %>% select(all_of(cdp_just_vars)), 
+                               nsets = length(cdp_just_vars))
+
+p_lang <- gg_miss_upset(visualize %>% select(all_of(c(bert_lang_vars))), 
+                                nsets = length(c(bert_lang_vars)))
+p_env <- gg_miss_upset(visualize %>% select(all_of(c(tru_env_vars))), 
+                                nsets = length(c(tru_env_vars)))
+
+# Combine plots for comparison
+pdf("report/figures/gg_miss_upset_emis_vars.pdf", height = 8, width = 15)
+p_emis
+dev.off()
+pdf("report/figures/gg_miss_upset_loc_vars.pdf", height = 8, width = 15)
+p_loc
+dev.off()
+pdf("report/figures/gg_miss_upset_ind_vars.pdf", height = 8, width = 15)
+p_ind
+dev.off()
+pdf("report/figures/gg_miss_upset_name_vars.pdf", height = 8, width = 15)
+p_name
+dev.off()
+pdf("report/figures/gg_miss_upset_fin_vars.pdf", height = 8, width = 15)
+p_fin
+dev.off()
+pdf("report/figures/gg_miss_upset_init_vars.pdf", height = 8, width = 15)
+p_init
+dev.off()
+pdf("report/figures/gg_miss_upset_targ_vars.pdf", height = 8, width = 15)
+p_targ
+dev.off()
+pdf("report/figures/gg_miss_upset_veri_vars.pdf", height = 8, width = 15)
+p_veri
+dev.off()
+pdf("report/figures/gg_miss_upset_just_vars.pdf", height = 8, width = 15)
+p_just
+dev.off()
+pdf("report/figures/gg_miss_upset_lang_vars.pdf", height = 8, width = 15)
+p_lang
+dev.off()
+pdf("report/figures/gg_miss_upset_env_vars.pdf", height = 8, width = 15)
+p_env
+dev.off()
+```
+
+## clean industry, country
+```{r}
+
+# thank you GPT4.o
+# Function to remove duplicates in each string
+remove_duplicates <- function(cell) {
+  cell <- tolower(gsub("&", "and", gsub("^NA$|NA, |, NA|, n/a|\\*", "", cell)))
+  unique_values <- unique(trimws(unlist(strsplit(cell, ", "))))
+  paste(unique_values, collapse = ", ")
+}
+
+remove_duplicate_countries <- function(cell) {
+  cell <- (gsub("&", "and", gsub("^NA$|NA, |, NA|, n/a|\\*", "", cell)))
+  unique_values <- unique(trimws(unlist(strsplit(cell, ", "))))
+  paste(unique_values, collapse = ", ")
+}
+
+# Apply to each element of the vector
+cdp_bert_ticker$cleaned_industry <- sapply(cdp_bert_ticker$primary_industry, remove_duplicates)
+cdp_bert_ticker$cleaned_country  <- sapply(cdp_bert_ticker$country, remove_duplicate_countries)
+cdp_bert_ticker$cleaned_initiative_type <- sapply(cdp_bert_ticker$initiative_type, remove_duplicate_countries)
+
+# thank you gpt4.o
+# Define a function to categorize industries
+categorize_industry <- function(industry) {
+  if (grepl("software|technology|semiconductors|telecommunication|professional services", industry, ignore.case = TRUE)) {
+    return("Technology and Telecommunications")
+  } else if (grepl("pharmaceuticals|biotechnology|health|life sciences", industry, ignore.case = TRUE)) {
+    return("Healthcare and Life Sciences")
+  } else if (grepl("energy|utilities|oil|gas|fossil|waste management|power", industry, ignore.case = TRUE)) {
+    return("Energy and Utilities")
+  } else if (grepl("banks|insurance|financial|estate", industry, ignore.case = TRUE)) {
+    return("Financial Services")
+  } else if (grepl("retail|consumer|household|apparel|personal|food|beverage|agriculture|home|distributors", industry, ignore.case = TRUE)) {
+    return("Consumer Goods and Retail")
+  } else if (grepl("transportation|logistics|air|water|ground|railroad|truck|tires", industry, ignore.case = TRUE)) {
+    return("Transportation and Logistics")
+  } else if (grepl("construction|manufacturing|industrial|aerospace|automobiles|equipment|machinery|building products|infrastructure", industry, ignore.case = TRUE)) {
+    return("Industrials and Manufacturing")
+  } else if (grepl("mining|materials|chemicals|forest|packaging|extract|mineral", industry, ignore.case = TRUE)) {
+    return("Materials and Extraction")
+  } else if (grepl("hospitality|leisure|tourism|media|tobacco", industry, ignore.case = TRUE)) {
+    return("Consumer Services and Leisure")
+  } else if (grepl("public|education|ngo|international", industry, ignore.case = TRUE)) {
+    return("Public Services and NGOs")
+  } else {
+    return(NA)  # In case the industry doesn't match any category
+  }
+}
+
+# Apply the categorization function to create a new column
+cdp_bert_ticker <- cdp_bert_ticker %>%
+  mutate(industry_category = sapply(`cleaned_industry`, categorize_industry))
+
+
+industry_categories <- cdp_bert_ticker %>%
+  ungroup() %>%
+  reframe(sub_cleaned_industries = toString(unique(`cleaned_industry`)),
+          company_names = toString(unique(`name`)),
+          .by = c(`year`, `industry_category`)) %>%
+  arrange(`industry_category`)
+
+
+```
+
+## region_assign
+```{r}
+
+# THANK YOU GPT3.5
+# GROUP BY REGIONS
+
+# Define regions
+north_america <- c("USA", "Canada", "Bermuda", "Mexico", "United States of America", "United States Minor Outlying Islands")
+south_america <- c("Brazil", "Argentina", "Chile", "Peru", "Colombia", "Uruguay", "Venezuela", "Paraguay") 
+caribbean <- c("Trinidad", "Panama", "El Salvador", "Costa Rica", "Guatemala", "Honduras", "Bahamas", "Jamaica", "Dominican Republic", "Belize", "British Virgin Islands", "Cayman Islands", "Guyana", "Trinidad and Tobago")
+oceania <- c("Australia", "New Zealand", "Fiji", "Tuvalu")
+asia <- c("Viet Nam", "India", "South Korea", "Korea", "Republic of Korea", "Japan", "China", "Taiwan", "Thailand", "Singapore", "Hong Kong", "Philippines", "United Arab Emirates", "Pakistan", "Bangladesh", "Indonesia", "Vietnam", "Malaysia", "Kazakhstan", "Mongolia", "Sri Lanka", "Jordan", "Oman", "Cambodia", "Qatar","Greater China")
+europe <- c("Czechia", "Albania", "Liechtenstein", "Guernsey", "Cyprus", "Russia", "Russian Federation", "Italy", "Switzerland", "Spain", "United Kingdom", "Ireland", "France", "Germany", "Netherlands", "Finland", "Sweden", "Austria", "Belgium", "Denmark", "Norway", "Portugal", "Poland", "Hungary", "Czech Republic", "Slovakia", "Greece", "Romania", "Bulgaria", "Croatia", "Luxembourg", "Slovenia", "Iceland", "Malta", "Monaco", "Lithuania", "Belarus", "Ukraine") 
+africa <- c("Ecuador", "South Africa", "Tunisia", "Nigeria", "Kenya", "Zimbabwe", "Egypt", "Mozambique", "Tanzania", "Swaziland", "Ghana", "Cameroon", "Equatorial Guinea", "Mauritius")
+middle_east <- c("Israel", "Turkey", "Saudi Arabia", "Kuwait", "Oman", "United Arab Emirates", "Qatar", "Jordan")
+
+# Create a function to assign countries to regions
+# initial function used for region-assign
+assign_region <- function(country) {
+  if (country %in% europe) {
+    return("Europe")
+  } else if (country %in% north_america) {
+    return("North America")
+  } else if (country %in% south_america) {
+    return("South America")
+  } else if (country %in% asia) {
+    return("Asia")
+  } else if (country %in% oceania) {
+    return("Oceania")
+  } else if (country %in% africa) {
+    return("Africa")
+  } else if (country %in% middle_east) {
+    return("Middle East")
+  } else {
+    return("Unknown")
+  }
+}
+
+# Define a function to assign regions based on partial string matching
+assign_region_partial <- function(country) {
+  if (is.na(country)) {
+    return("Unknown") # Handle NA values explicitly
+  } else if (any(stringr::str_detect(country, europe))) {
+    return("Europe")
+  } else if (any(stringr::str_detect(country, north_america))) {
+    return("North America")
+  } else if (any(stringr::str_detect(country, south_america))) {
+    return("South America")
+  } else if (any(stringr::str_detect(country, caribbean))) {
+    return("Caribbean")
+  } else if (any(stringr::str_detect(country, oceania))) {
+    return("Oceania")
+  } else if (any(stringr::str_detect(country, asia))) {
+    return("Asia")
+  } else if (any(stringr::str_detect(country, africa))) {
+    return("Africa")
+  } else if (any(stringr::str_detect(country, middle_east))) {
+    return("Middle East")
+  } else {
+    return("Unknown")
+  }
+}
+
+# Apply the function to the list of countries
+cdp_bert_ticker$region_assign3 <- sapply(cdp_bert_ticker$cleaned_country, assign_region_partial)
+View(data.frame(cdp_bert_ticker$`account no`, cdp_bert_ticker$cleaned_country, 
+                cdp_bert_ticker$region_assign, cdp_bert_ticker$region_assign3) %>%
+       distinct(cdp_bert_ticker$`account no`, .keep_all=TRUE))
+
+
+
+cdp_bert_ticker$region_assign[cdp_bert_ticker$region_assign == "Unknown"] <- NA
+cdp_bert_ticker$region_assign3[cdp_bert_ticker$region_assign3 == "Unknown"] <- NA
+
+
+cdp_bert_ticker <- cdp_bert_ticker %>%
+  arrange(`account no`, `year`) %>%
+  group_by(`account no`) %>%
+  fill(region_assign, .direction = "downup")  # Fill forward and backward region_assign
+
+# comparison
+View(cdp_bert_ticker %>% ungroup() %>% reframe(count = n(), .by = c(region_assign)))
+View(cdp_bert_ticker_v2 %>% ungroup() %>% reframe(count = n(), .by = c(region_assign3)))
+
+# Calculate counts of unique years for each combination of CDP, ESG, and TRI data
+overlap_counts_df <- cdp_bert_ticker %>%
+  group_by(region_assign3) %>% # Industry_Group year, fic, etc. 
+  summarise(
+    cdp_accounts = n_distinct(`account no`), # & is.na(esg_names) & is.na(tri_names) # first coalesce the cdp.names columns
+  ) 
+
+# check fill forward and back
+View(merge(cdp_bert_ticker[, c("account no", "year", "region_assign")], cdp_bert_ticker_v2[, c("account no", "year", "region_assign")], by = c("account no", "year"), all = TRUE))
+
+write.csv(cdp_bert_ticker, "preprocessed_data/cdp_bert_ticker.csv", row.names = FALSE)
+cdp_bert_ticker <- read_csv("preprocessed_data/cdp_bert_ticker.csv")
+
+
+### FOR UPLOADING TO ORBIS (adding a regionassign3 column)
+merged_df <- merge(multinom_test2, cdp_bert_ticker[, c("account no", "region_assign3")] %>% distinct(`account no`, .keep_all=TRUE), 
+                   by = "account no", all.x = TRUE)
+
+write.csv(merged_df, "preprocessed_data/multinom_test2_region_assign3.csv", row.names=FALSE) # do all this BEFORE REDIVIS!
+merged_df <- read_csv("preprocessed_data/multinom_test2_region_assign3.csv")
+
+# use 2018-2019 external_verification_scope to slesh out 1/0 verified_s1, verified_s2
+merged_vf <- merge(merged_df[,colnames(merged_df[, !(colnames(merged_df) %in% c("external_verification_s1", "external_verification_s2", "external_verification_s3"))])], cdp_emissions[, c("account no", "year", "external_verification_scope","external_verification_proportion","external_verification_s1_proportion", "external_verification_s2_proportion", "external_verification_s1", "external_verification_s2", "external_verification_s3")] %>% distinct(`account no`, year, .keep_all=TRUE), 
+                   by = c("account no", "year"), all.x = TRUE)
+
+merged_vf$verified_s1 <- 1
+merged_vf$verified_s2 <- 1
+merged_vf$verified_s3 <- 1
+
+
+# works only to 0 them out
+merged_vf$verified_s1[merged_vf$year == 2020 & (is.na(merged_vf$external_verification_s1)|merged_vf$external_verification_s1 %in% c("0.0", "Question not applicable", "Not verified"))] <- 0
+merged_vf$verified_s1[merged_vf$year %in% c(2018:2019) & (is.na(merged_vf$external_verification_scope)|merged_vf$external_verification_scope == "Hidden Answer"|!grepl("scope 1", paste(merged_vf$external_verification_scope), ignore.case = TRUE))] <- 0
+merged_vf$verified_s1[merged_vf$year %in% c(2010:2017) &  (is.na(merged_vf$external_verification_s1)|(merged_vf$external_verification_s1 %in% c("Question not applicable", "Not verified")))] <- 0
+
+#  scope 2
+merged_vf$verified_s2[merged_vf$year == 2020 & (is.na(merged_vf$external_verification_s2)|merged_vf$external_verification_s2 %in% c("0.0", "Question not applicable", "Not verified"))] <- 0
+merged_vf$verified_s2[merged_vf$year %in% c(2018:2019) & (is.na(merged_vf$external_verification_scope)|merged_vf$external_verification_scope == "Hidden Answer"|!grepl("scope 2", paste(merged_vf$external_verification_scope), ignore.case = TRUE))] <- 0
+merged_vf$verified_s2[merged_vf$year %in% c(2010:2017) &  (is.na(merged_vf$external_verification_s2)|(merged_vf$external_verification_s2 %in% c("Question not applicable", "Not verified")))] <- 0
+
+# scope 3 (i gave up looking for a column w that info, so just delete!)
+merged_vf$verified_s3[(is.na(merged_vf$external_verification_s3)|(merged_vf$external_verification_s3 %in% c("Question not applicable", "Not verified")))] <- 0
+
+View(merged_vf[, c("account no", "year", colnames(merged_vf)[grepl("verif", colnames(merged_vf))])])
+
+
+variable_by_year_summary1 <- merged_vf %>% 
+  ungroup() %>%
+  reframe(verified_s1 = toString(unique(as.character(verified_s1))),
+          verified_s2 = toString(unique(as.character(verified_s2))),
+          verified_s3 = toString(unique(as.character(verified_s3))),
+          scope1 = toString(unique(as.character(scope1))), 
+          scope2 = toString(unique(as.character(scope2))),  
+          scope2_loc = toString(unique(as.character(scope2_loc))),
+          scope2_mkt = toString(unique(as.character(scope2_market))),
+          external_verification_scope = toString(unique(external_verification_scope)), 
+          external_verification_proportion = toString(unique(external_verification_proportion)),
+          external_verification_s1_proportion = toString(unique(external_verification_s1_proportion)), 
+          external_verification_s2_proportion = toString(unique(external_verification_s2_proportion)), 
+          external_verification_s1 = toString(unique(external_verification_s1)),
+          external_verification_s2 = toString(unique(external_verification_s2)),
+          external_verification_s3 = toString(unique(external_verification_s3)), # 2560 primary_tickers; 3260 tickers;
+          .by = c(year))
+
+
+write.csv(merged_vf, "preprocessed_data/merged_vf.csv", row.names=FALSE)
+       
+
+```
+
+#### plotting verification and emis decrease over time
+```{r}
+# with merged_df
+summary_stats <- merged_vf %>%
+  ungroup() %>%
+  summarise(mean_s1 = mean(as.numeric(scope1[scope1 != 0]), na.rm=TRUE),
+            mean_s2 = mean(as.numeric(scope2_max[scope2_max !=0]), na.rm=TRUE),
+            
+            sd_s1 = sd(as.numeric(scope1[scope1 != 0]), na.rm=TRUE),
+            sd_s2 = sd(as.numeric(scope2_max[scope2_max !=0]), na.rm=TRUE),
+            
+            mean_verified_s1 = mean(as.numeric(as.character(verified_s1)), na.rm=TRUE), 
+            mean_verified_s2 = mean(as.numeric(as.character(verified_s2)), na.rm=TRUE),
+            mean_emis_decrease = mean(as.numeric(as.character(emis_decrease)), na.rm=TRUE),
+            mean_active_target = mean(as.numeric(as.character(active_target_numeric)), na.rm=TRUE),
+            
+            sd_verified_s1 = sd(as.numeric(as.character(verified_s1)), na.rm=TRUE),
+            sd_verified_s2 = sd(as.numeric(as.character(verified_s2)), na.rm=TRUE),
+            sd_emis_decrease = sd(as.numeric(as.character(emis_decrease)), na.rm=TRUE),
+            sd_active_target = sd(as.numeric(as.character(active_target_numeric)), na.rm=TRUE),
+
+            .by = c(year, region_assign3))
+
+ggplot(data = summary_stats, mapping = aes(x = factor(year), y = log(mean_s1), fill = region_assign3)) +
+  geom_boxplot() + 
+  labs(title = "Boxplot of mean S1 by year, cleaned_country",
+       y = "log(Mean scope 1)") + # Fraction of companies that reported verifying S1
+  theme_minimal() +
+  theme(title = element_text(size=13),
+        legend.text = element_text(size = 13),
+        legend.title = element_text(size = 13),
+        axis.text.y = element_text(size=13),
+        axis.title.y = element_text(size = 13),
+        axis.text.x = element_text(size = 13, angle = 90, hjust =1))
+
+
+ggplot(data = summary_stats, aes(x = factor(year), y = log(mean_s2), fill = region_assign3, group = region_assign3)) +
+  facet_wrap(~region_assign3) + 
+  geom_line(aes(color = region_assign3), size = 1.2) + # Line plot for the mean, grouped by region
+  geom_point(aes(color = region_assign3), size = 2) + # Points for each group
+  geom_ribbon(aes(ymin = log(mean_s2) - log(sd_s2), ymax = log(mean_s2) + log(sd_s2)), 
+              alpha = 0.2) + # Shaded area for SD
+  labs(
+    title = "Scope 2 emissions (variation within cleaned_country grouping)",
+    x = NULL,
+    y = "Log Scope 2", # Fraction reporting active target
+    color = "Region",
+    fill = "Region"
+  ) +
+  theme_minimal() +
+  theme(title = element_text(size=13),
+        legend.text = element_text(size = 13),
+        legend.title = element_text(size = 13),
+        axis.text.y = element_text(size=13),
+        axis.title.y = element_text(size = 13),
+        axis.text.x = element_text(size = 13, angle = 90, hjust =1)) +
+  scale_x_discrete(breaks = seq(2010, 2020, by = 2))
+
+
+
+# this is making me think that there's a systematic data error. maybe the question for verification of s1/s2 changed and I didn't merge it properly!!!!
+# fixed... 6 hours later UGH!
+
+```
+
+#### annual growth rate in emissions and cdp responses
+```{r}
+
+lagged_set <- summary_stats %>%
+  group_by(region_assign3) %>%
+  arrange(year) %>%
+  mutate(nextyr_mean_s1 = shift(mean_s1, n=1),
+         nextyr_mean_s2 = shift(mean_s2, n=1),
+         nextyr_mean_verified_s1 = shift(mean_verified_s1, n = 1),
+         nextyr_mean_verified_s2 = shift(mean_verified_s2, n = 1),
+         nextyr_mean_emis_decrease = shift(mean_emis_decrease, n = 1),
+         nextyr_mean_active_target = shift(mean_active_target, n = 1),
+         ) %>%
+  mutate(growth_s1 = (nextyr_mean_s1 - mean_s1)/mean_s1,
+         growth_s2 = (nextyr_mean_s2 - mean_s2)/mean_s2,
+         growth_verified_s1 = (nextyr_mean_verified_s1 - mean_verified_s1)/mean_verified_s1,
+         growth_verified_s2 = (nextyr_mean_verified_s2 - mean_verified_s2)/mean_verified_s2,
+         growth_emis_decrease = (nextyr_mean_emis_decrease - mean_emis_decrease)/mean_emis_decrease,
+         growth_active_target = (nextyr_mean_active_target - mean_active_target)/mean_active_target)
+  
+
+
+
+ggplot(data = lagged_set[lagged_set$region_assign3 %in% c("Europe", "Asia", "North America", "South America", "Africa", "Middle East"),], aes(x = factor(year), y = growth_s2, fill = region_assign3, group = region_assign3)) +
+  facet_wrap(~region_assign3) + 
+  geom_line(aes(color = region_assign3), size = 1.2) + # Line plot for the mean, grouped by region
+  geom_point(aes(color = region_assign3), size = 2) + # Points for each group
+  geom_ribbon(aes(ymin = growth_s2 - log(sd_s2), ymax = growth_s2 + log(sd_s2), fill = region_assign3), alpha = 0.2) + # Shaded area for SD
+  labs(
+    title = "Annual growth rate in log scope 2",
+    subtitle = "(variation within cleaned_country grouping)",
+    x = NULL,
+    y = "Growth to next year's log scope 2",#fraction emis decreas
+    color = "Region",
+    fill = "Region"
+  ) +
+  theme_minimal() +
+  theme(title = element_text(size=13),
+        legend.text = element_text(size = 13),
+        legend.title = element_text(size = 13),
+        axis.text.y = element_text(size=13),
+        axis.title.y = element_text(size = 13),
+        axis.text.x = element_text(size = 13, angle = 90, hjust =1)) +
+  scale_x_discrete(breaks = seq(2010, 2020, by = 2)) #+ 
+  # scale_y_continuous(breaks = seq(-2, 2, by=1))
+
+
+# regressions with growth rate in emissions as the only dependent, and commitment/active target as the only independent
+model1 <- glm(scale(growth_s1) ~ scale(growth_active_target), data = lagged_set[!is.infinite(lagged_set$growth_s1) & !is.na(lagged_set$growth_s1) & 
+                                                                                  !is.infinite(lagged_set$growth_active_target) & !is.na(lagged_set$growth_active_target),] %>% ungroup(), family= gaussian())
+
+summary(model1)
+
+# regressions with growth rate in emissions as the only dependent, and commitment/active target as the only independent
+model1 <- glm(scale(growth_s1) ~ scale(growth_active_target), data = lagged_set[!is.infinite(lagged_set$growth_s1) & !is.na(lagged_set$growth_s1) & 
+                                                                                  !is.infinite(lagged_set$growth_active_target) & !is.na(lagged_set$growth_active_target) & lagged_set$region_assign3 %in% ("North America"),] %>% ungroup(), family= gaussian())
+
+summary(model1)
+
+
+# regressions with growth rate in emissions as the only dependent, and commitment/active target as the only independent
+model1 <- glm(scale(growth_s1) ~ scale(growth_active_target), data = lagged_set[!is.infinite(lagged_set$growth_s1) & !is.na(lagged_set$growth_s1) & 
+                                                                                  !is.infinite(lagged_set$growth_active_target) & !is.na(lagged_set$growth_active_target) & lagged_set$region_assign3 %in% ("Europe"),] %>% ungroup(), family= gaussian())
+
+summary(model1)
+
+
+
+# regressions with growth rate in emissions as the only dependent, and commitment/active target as the only independent
+model1 <- glm(scale(growth_s1) ~ scale(growth_active_target), data = lagged_set[!is.infinite(lagged_set$growth_s1) & !is.na(lagged_set$growth_s1) & 
+                                                                                  !is.infinite(lagged_set$growth_active_target) & !is.na(lagged_set$growth_active_target) & lagged_set$region_assign3 %in% ("Asia"),] %>% ungroup(), family= gaussian())
+
+summary(model1)
+
+
+```
+
+## merge_test
+```{r}
+
+# Calculate counts of unique years for each column of
+compustat_counts <- crsp_test %>%
+  group_by(fyear) %>%
+  reframe(
+    total_assets = n_distinct(tic[!is.na(as.numeric(at))]),
+    current_assets_total = n_distinct(tic[!is.na(as.numeric(act))]),
+    capital_expenditures = n_distinct(tic[!is.na(as.numeric(capx))]),
+    acquisitions = n_distinct(tic[!is.na(as.numeric(aqc))]),
+    current_assets_discontinued = n_distinct(tic[!is.na(as.numeric(acdo))]),
+    #acquisitions_sales_contribution = n_distinct(tic[!is.na(as.numeric(acqsc))]),
+    employees = n_distinct(tic[!is.na(as.numeric(emp))]),
+    #contingent_liabilities = n_distinct(tic[!is.na(as.numeric(clt))]),
+    total_liabilities = n_distinct(tic[!is.na(as.numeric(lt))]),
+    common_shares_outstd = n_distinct(tic[!is.na(as.numeric(csho))]),
+    price_close_annual_fiscal = n_distinct(tic[!is.na(as.numeric(prcc_f))]),
+    long_term_debt = n_distinct(tic[!is.na(as.numeric(dltt))]),
+    property_plant_equipment_total = n_distinct(tic[!is.na(as.numeric(ppent))]),
+    invested_capital = n_distinct(tic[!is.na((icapt))]),
+    intangible_assets = n_distinct(tic[!is.na((intan))]),
+    #staff_expense = n_distinct(tic[!is.na((xstfws))]),
+    status = n_distinct(tic[!is.na((costat))]),
+    market_value = n_distinct(tic[!is.na((mkvalt))]),
+    gic_industries = n_distinct(tic[!is.na((gind))]),
+    gic_sectors = n_distinct(tic[!is.na((gsector))]),
+    state_incorporation = n_distinct(tic[!is.na((incorp))]),
+    naics = n_distinct(tic[!is.na((naics))]),
+    total_inventories = n_distinct(tic[!is.na((invt))])
+  )
+
+# calculate the market cap based on common shares outstanding and closing price... ?
+crsp_test$market_cap_calc <- crsp_test$csho*crsp_test$prcc_f
+
+
+# MERGE CRSP FIRM CONTROLS WITH CDP BERT TICKER
+
+# how did this go down from 35,724 observations to 1,858 observations??? had to all=TRUE, then filter down to is.na account no
+# merge by ticker... 
+# View(merge(crsp_test[,c("fyear", "tic", "mkvalt", "emp", "incorp", "naics", "capx", "at", "ppent")], cdp_bert_ticker[,c("year", "Ticker", "primary_ticker", "name", "account no", "cleaned_country", "region_assign")], by.x = c("fyear", "tic"), by.y = c("year", "Ticker"), all=TRUE) %>% filter(!is.na(`account no`))) 
+
+# Assuming crsp_test and cdp_bert_ticker are your data frames
+merge_test <- merge(cdp_bert_ticker,# [, c("year", "Ticker", "primary_ticker", "name", "cleaned_country", "region_assign")] 
+                    crsp_test[crsp_test$indfmt == "INDL", ], # c("fyear", "tic", "mkvalt", "emp", "incorp", "naics", "capx", "at", "ppent")
+                     by.y = c("fyear", "tic"),
+                     by.x = c("year", "Ticker"), all=TRUE) %>% filter(!is.na(`account no`))
+
+# FLAG THE ONES THAT DON"T MATCH gsub(" US", "", primary_ticker")
+
+# thank you GPT
+# Create the flag column
+merge_test <- merge_test %>%
+  mutate(
+    primary_ticker_cleaned = gsub(" [A-Z]{2}$", "", primary_ticker),
+    flag = ifelse(Ticker != primary_ticker_cleaned, 1, 0)
+  )
+
+merge_test <- merge_test %>%
+  mutate(
+    recipient_investor = ifelse(grepl("Inv|Investor", filename) & !grepl("Supply Chain|SC", filename), 1, 0),
+    recipient_supply_chain =  ifelse(grepl("Supply Chain|SC", filename) & !grepl("Inv|Investor", filename), 1, 0),
+    recipient_both = ifelse(grepl("Supply Chain|SC", filename) & grepl("Inv|Investor", filename), 1, 0)
+  )
+
+# # View the updated data frame
+# print(merge_test)
+
+# write.csv(merge_test, "preprocessed_data/merge_test.csv", row.names=FALSE)
+# merge_test <- read_csv("preprocessed_data/merge_test.csv")
+
+# Total Assets (at)
+# Current Assets Total (act)
+# Capital Expenditures (capx)
+# Acquisitions (aqc)
+# Current Assets of Discontinued Operations (acdo)
+# Acquisitions - Current Sales Contribution (acqsc)
+# Employees (emp)
+# Contingent Liabilities - Total (clt)
+# Liabilities - Total (lt)
+# Common Shares Outstanding (csho)
+# Price close annual fiscal (prcc_f)
+# Long-Term Debt - Total (dltt)
+# Property, Plant and Equipment - Total (Net) (ppent)
+# Invested Capital - Total (icapt)
+# Intangible Assets - Total (intan)
+# Staff Expense - Wages and Salaries (xstfws)
+# Company status (costat) - active A, inactive I, deleted D, temporarily inactive T
+# Market Value - Total - Fiscal (mkvalt)
+# GIC Industries (gind)
+# GIC Sectors (gsector)
+# International, Domestic, Both Indicator (idbflag)
+# Current State/Province of Incorporation Code (incorp)
+# North American Industry Classification Code (naics)
+# Inventories - Total (invt)
+
+
+# Property, Plant, and Equipment - Buildings at Cost (fatb)
+# Property, Plant, and Equipment - Construction in Progress at Cost (fatc)
+# Property, Plant, and Equipment - Machinery and Equipment at Cost (fate)
+# Property, Plant, and Equipment - Leases at Cost (fatl)
+# Property, Plant, and Equipment - Natural Resources at Cost (fatn)
+# Property, Plant, and Equipment - Other at Cost (fato)
+# Property, Plant, and Equipment - Land and Improvements at Cost (fatp)
+# Investment Assets - Total (Insurance) (iati)
+# Property, Plant and Equipment - Retirements (Schedule V) (ppevr)
+
+```
+
+### missing industry categorizations
+```{r}
+
+# perplexity_industry_categorization_for_200_NA_companies.csv
+industry_classifications <- read_csv("preprocessed_data/perplexity.csv")
+
+# thank you perplexity.ai
+# Using dplyr's left_join and coalesce to fill NAs
+# Perform left join, temporarily removing white spaces in both 'name' columns
+df_trial <- merge_test %>%
+  mutate(name_clean = gsub(" ", "", tolower(`name`))) %>%  # Remove spaces from merge_test 'name'
+  left_join(industry_classifications[,c("name", "industry_category")] %>%
+              mutate(name_clean = gsub(" ", "", tolower(`name`))) %>% 
+              distinct(name_clean, .keep_all=TRUE),   # Remove spaces from industry_classifications 'name'
+            by = "name_clean", suffix = c("", "_perplexity")) %>%
+  mutate(industry_category = coalesce(industry_category_perplexity, industry_category)) %>%
+  select(-c(name_clean)) %>% # Remove the temporary 'name_clean' column
+  arrange(`account no`, year) %>%  # Ensure data is ordered by 'year'
+  group_by(`account no`) %>% # within each account number
+  fill(industry_category, .direction = "down")  # Fill industry_category forward
+
+# View(df_trial[,c("name", "year", "industry_category", "industry_category_perplexity")])
+
+
+# CONTINUE FROM HERE... 
+unique(df_trial$name[is.na(df_trial$industry_category)]) #454! 26 entries for perplexity # 376, #347 # 320 # 259 ==> about 10 more perplexity searches at this rate. It's been increasingly stingy with information provision. 
+
+merge_test <- df_trial
+
+write.csv(merge_test, "preprocessed_data/merge_test.csv", row.names=FALSE)
+merge_test <- read_csv("preprocessed_data/merge_test.csv")
+
+variable_by_year_summary <- merge_test %>% 
+  ungroup() %>%
+  reframe(count = n(),# 2560 primary_tickers; 3260 tickers;
+          .by = c(region_assign, industry_category, recipient_investor, recipient_supply_chain, recipient_both))
+
+# Transform the data by multiplying recipient columns by count
+df_transformed <- variable_by_year_summary %>%
+  mutate(
+    count_investor = recipient_investor * count,
+    count_supply_chain = recipient_supply_chain * count,
+    count_both = recipient_both * count
+  ) %>%
+  select(region_assign, industry_category, count_investor, count_supply_chain, count_both)
+
+# thank you perplexity.ai for bar chart
+# Pivot the data from wide to long format
+long_data <- df_transformed %>%
+  pivot_longer(cols = c(count_investor, count_supply_chain, count_both),
+               names_to = "recipient_type",
+               values_to = "count")
+
+# for consistent legend industry_category ordering
+long_data <- long_data %>%
+  mutate(industry_category = fct_reorder(industry_category, 
+                                         count, 
+                                         .fun = sum, 
+                                         .desc = TRUE),
+         region_assign = fct_reorder(region_assign,
+                                     count,
+                                     .fun=sum, 
+                                     .desc = TRUE))
+
+# Plotting the bar chart using ggplot2
+ggplot(long_data, aes(x = recipient_type, y = count, fill = industry_category)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "Recipient Types Across Industry Categories",
+       x = "Recipient Type",
+       y = "Count",
+       fill = "Industry Category") +
+  theme_minimal() +
+  #facet_wrap(~region_assign) +
+  theme(axis.text.x = element_text(angle = 80, hjust = 1))
+
+library(viridis)
+# Plotting the bar chart using ggplot2
+ggplot(long_data, aes(x = recipient_type, y = count, fill = region_assign)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "Recipient Types Across Regions",
+       x = "Recipient Type",
+       y = "Count",
+       fill = "Region Assignment") +
+  theme_minimal() +
+  #facet_wrap(~region_assign) +
+  theme(axis.text.x = element_text(angle = 80, hjust = 1)) +
+  scale_fill_brewer(palette = "Set2") #+
+  # scale_fill_viridis(discrete = TRUE) 
+
+```
+
+
+
+
+
