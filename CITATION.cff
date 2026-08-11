@@ -1,0 +1,27 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+authors:
+  - family-names: Elfarsdóttir
+    given-names: Aldís
+    orcid: "https://orcid.org/0000-0000-0000-0000"
+  - family-names: Hikida
+    given-names: Chase
+title: "cdp-comp-tru-bert-merge"
+version: 1.0.0
+date-released: "2025-10-09"
+url: "https://github.com/aldis-elfarsdottir/cdp-comp-tru-bert-merge"
+repository-code: "https://github.com/aldis-elfarsdottir/cdp-comp-tru-bert-merge"
+license: MIT
+abstract: >
+  Partial codebase, continued in Redivis. CDP merge and ClimateBERT preprocessing pipeline.
+  Compustat and Trucost merge with BERT-augmented CDP. Output analyzed in Redivis for Orbis data.
+preferred-citation:
+  type: thesis
+  authors:
+    - family-names: Elfarsdóttir
+      given-names: Aldís
+  title: "[Dissertation Title]"
+  institution:
+    name: "Stanford University"
+  thesis-type: "phdthesis"
+  year: 2026
