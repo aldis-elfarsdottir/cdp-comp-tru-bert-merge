@@ -1,5 +1,5 @@
 ---
-title: "Merging CDP, Compustat, Trucost, ClimateBERT key variables"
+title: "Merging CDP, Trucost, Compustat, ClimateBERT key variables"
 author: "Aldís Elfarsdóttir"
 date: "Oct 9, 2025"
 output:
