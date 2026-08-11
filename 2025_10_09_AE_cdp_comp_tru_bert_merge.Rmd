@@ -55,26 +55,12 @@ library(naniar)     # visualize missingness
 library(visdat)     # visualize missingness
 library(VGAM)       # don't install it in with compilation!
 rstudioapi::writeRStudioPreference("data_viewer_max_columns", 500L) # changes to 910L later for 910 columns
-#library(arrow)
 ```
-
 
 # Quick Restart Import
 ```{r}
 
-## Other datasets:
-# CAPIQ
-# COMPUSTAT Trucost
-# D&B - does this have info on private companies?
-# ESG Manager
-# Enverus
-
 # WRDS
-# crsp_test <- read.csv("raw_data/crsp_test_market_cap_3758.csv") # 12534 obs 
-# company_tickers <- read.csv("preprocessed_data/company_tickers.csv") # found 204 initially... now 665! yay!
-# compustat <- read_csv("raw_data/compustat_gvkey.csv")
-# trucost <- read_csv("raw_data/trucost_environmental.csv")
-# trucost <- trucost[!is.na(trucost$gvkey),]
 compustat_v2_comp_whole <- read_csv("compustat_v2_whole_comp_database.csv")
 colnames(compustat_v2_comp_whole) <- paste0("comp_", gsub(" ", "_", colnames(compustat_v2_comp_whole)))
 trucost_v2_tru_whole <- read_csv("trucost_v2_tru_whole.csv")
@@ -82,11 +68,10 @@ colnames(trucost_v2_tru_whole) <- paste0("tru_", gsub(" ", "_", colnames(trucost
 
 # CDP
 cdp <- read.csv("preprocessed_data/cdp_v2.csv", check.names = FALSE)[,-1]
-cdp_summaries <- read_csv("preprocessed_data/cdp_summaries_v2.csv") # are there more isins in the sheets themselves?
-cdp_targets <- read_csv("preprocessed_data/cdp_targets_v2.csv") # use v2 cleaned 10/9 (in that I aggregated by year, account no, not year, account, name)
+cdp_summaries <- read_csv("preprocessed_data/cdp_summaries_v2.csv") 
+cdp_targets <- read_csv("preprocessed_data/cdp_targets_v2.csv") # use v2 cleaned 10/9 (in that I aggregated by year, account no, instead of year, account no, name)
 cdp_emissions <- read_csv("preprocessed_data/cdp_emissions_v2.csv") # use v2 cleaned 10/9/25
 cdp_verification <- read_csv("preprocessed_data/cdp_verification.csv") # this came from cleaning up the cdp_emissions 10/9/25
-#cdp <- read_csv("preprocessed_data/cdp.csv")[,-1] # remerge from summaries, etc.
 
 # something got wrong w amended date
 cdp_comp_tru <- read_csv("preprocessed_data/cdp_comp_tru.csv", col_types = cols(
@@ -107,17 +92,12 @@ base_KPI_labels_v3$cdp_year <- base_KPI_labels_v3$year - 1
 colnames(base_KPI_labels_v3) <- paste0("bert_", gsub(" ", "_", colnames(base_KPI_labels_v3)))
 write.csv(base_KPI_labels_v3, "preprocessed_data/base_KPIs_labels_v3_cdpyear.csv", row.names=FALSE)
 
-
 ```
 
 # YAY FUNCTIONS!
 ```{r}
 
 # THANK YOU GPT3.5
-# > # Remove the data frames
-# > for (df_name in (objects[grep("^cdp_esg", objects)])) {
-# +     rm(list = df_name)
-# + }
 
 # aiplayground.stanford.edu gpt
 safe_to_string <- function(x) {
@@ -233,8 +213,6 @@ add_stars <- function(model) {
   )
   
   # # Sorting by Upper Bound in descending order
-  # lm_summary_results_sorted <- lm_summary_results[order(-lm_summary_results$Upper_Bound, lm_summary_results$Pvals), ]
-  # 
   
   # Assign stars based on p-values
   stars <- ifelse(lm_summary_results$Pvals < 0.001, "***", 
@@ -254,8 +232,6 @@ add_stars <- function(model) {
   print(xtable_model, type = "latex", comment = FALSE)
   
 }
-
-# xtable(predict_na, sanitize.text.function = function(x) xtable::sanitize.text.function(x, use.latex = TRUE)) # from GPT3.5 the "sanitize" functionality
 
 #http://www.sthda.com/english/wiki/elegant-correlation-table-using-xtable-r-package 
 corstars <-function(x, method=c("pearson", "spearman"), removeTriangle=c("upper", "lower"), result=c("none", "html", "latex")){
@@ -301,7 +277,6 @@ corstars <-function(x, method=c("pearson", "spearman"), removeTriangle=c("upper"
     }
 } 
 
-
 # func to read and process cdp files
 
 # THANK YOU GPT3.5
@@ -320,7 +295,6 @@ read_and_process_file <- function(file) {
   colnames(data) <- tolower(colnames(data))
   return(data)
 }
-
 
 # Function to clean names
 
@@ -368,7 +342,6 @@ clean_and_coalesce <- function(dset) {
   return(dset)
 }
 
-
 # Func rename texrows
 # THANK YOU GPT4o
 rename_texrows <- function(file_path) {
@@ -408,7 +381,6 @@ rename_texrows <- function(file_path) {
   # Step 3: Combine lines into a single string (for easier manipulation)
   tex_content <- paste(tex_lines, collapse = "\n")
   
-  # Step 4: Perform text replacements using stringr::str_replace_all
   for (pattern in names(replacements)) {
     replacement <- replacements[[pattern]]
     tex_content <- gsub(pattern, replacement, tex_content, perl = TRUE)
@@ -427,7 +399,6 @@ rename_texrows <- function(file_path) {
 # rename_texrows("report/report_tables/logit_models_specificity_complex_0sESG_JUNE_2010-2013ESG_esg_ratings_pkl.tex")
 ```
 
-
 # CDP summaries = cdp_df gives rough sense of which companies disclosed in answer to which questions (and if they amended their response) - 9/12/23-9/13
 ```{r}
 
@@ -443,15 +414,12 @@ columns <- c("account no", "name", "country", "status", "region", "public", "sam
 
 cdp_dfs <- list()
 
-# x <- filenames[7] # FOR TESTING 
 import_cdp <- function(x) {
   cdp <- read_csv(sprintf("preprocessed_data/cdp_data_sheets/%s",x), col_names=TRUE, na = c("NA"," ","Question not applicable"),
                   show_col_types = FALSE)
   
   # date format
-  # dates <- cdp[,which(grepl("ammended date",tolower(names(cdp))))] # as.Date(, , origin = "1899-12-30") 
   # https://stackoverflow.com/questions/43230470/how-to-convert-excel-date-format-to-proper-date-in-r
-  # names(dates) <- names(df)[which(grepl("date",tolower(names(df))))]
   
   format <- data.frame(matrix(nrow=nrow(cdp), ncol = length(columns)))
   colnames(format) <- columns
@@ -529,7 +497,6 @@ import_cdp <- function(x) {
       format[,colname] <- cdp[,colname]
       print(x)
       print(colname)
-      #print(class(cdp[,colname]))
       print(format[,colname][!is.na(format[,colname])])
     }
   }
@@ -557,7 +524,6 @@ rm(cdp_dfs)
 ```
 
 Problems already: missing regions, inconsistent summary columns over time. 
-
 
 # CDP targets = cdp_targets absolute vs. intensity target and why no target... 
 ```{r}
@@ -624,8 +590,6 @@ for (file in unique(filelist_targets)) {
   if(length(grep("2010", file)>0)) {
     print(file)
     
-    # colnames(processed_data[[file]])[grep("t8c9.*comment", colnames(processed_data[[file]]),perl=TRUE)] <- "explain_targets" # USE THIS FOR EXPLAIN_INTENSITY_TARGET
-    # colnames(processed_data[[file]])[grep("9.9", colnames(processed_data[[file]]),fixed=TRUE)] <- "initiative_comment"
     colnames(processed_data[[file]])[grep("9.6.*target type", colnames(processed_data[[file]]),fixed=TRUE)] <- "active_target"
     colnames(processed_data[[file]])[grep("9.3.*forecast", colnames(processed_data[[file]]),fixed=TRUE)] <- "why_no_target"
     colnames(processed_data[[file]])[grep("9.7.*describe.*actions", colnames(processed_data[[file]]),fixed=TRUE)] <- "initiative_details" # USE THIS TO CLASSIFY REDUCTION INITIATIVES FOR 2010 if !is.na() <- "Yes"
@@ -680,7 +644,6 @@ for (file in unique(filelist_targets)) {
   
 }
 
-
 processed_data_targets <- lapply(processed_data, function(df) {
   numeric_cols <- sapply(df, is.numeric)
   df[, numeric_cols] <- lapply(df[, numeric_cols], as.character)
@@ -696,9 +659,6 @@ target_cols <- c("active_target", "absolute_target_scope", "science_based_absolu
 View(merged_data_targets[merged_data_targets$`account no` == "943", c(info_cols, target_cols)]) 
 
 write.csv(sort(colnames(merged_data_targets)), "preprocessed_data/cdp_targets_colnames.csv")
-
-# # check columns 
-# c("filename", "year", "response received date", "ticker", "isin", "primary expansion","secondary expansions", "account no", "name", "country", "primary industry", "primary activity", "industry group","public", "authority types", "primary_activity", "primary sector", "primary industry",  "primary questionnaire sector", "active_target", "absolute_target_scope",  "intensity_target_scope", "science_based_intensity_target", "science_based_absolute_target", "absolute_target_comment", "intensity_target_comment",   "reduction_initiatives", "initiative_type", "initiative_details", "payback_period", "why_no_target", "why_no_initiatives", "attachments")
 
 clean_targets <- clean_and_coalesce(merged_data_targets)
 
@@ -731,38 +691,21 @@ cdp_targets <- clean_targets %>%
           cdp_absolute_target_scope = safe_to_string((absolute_target_scope)),
           cdp_intensity_target_scope = safe_to_string((intensity_target_scope)),
           cdp_why_no_target = safe_to_string((why_no_target)),
-          # other_targets = toString(unique(other_targets)), # not available for all years just 2018-2020
-          # goods_avoided = toString(unique(goods_avoided)), # not available for all years, just pre-2018
-          # goods_details = toString(unique(goods_details)), # not available for all years, just pre-2018
           cdp_reduction_initiatives = safe_to_string((reduction_initiatives)), # might align with payback_period
           cdp_initiative_type = safe_to_string((initiative_type)),
           cdp_initiative_details = safe_to_string((initiative_details)),
           cdp_payback_period = safe_to_string((payback_period)),
           cdp_why_no_initiatives = safe_to_string((why_no_initiatives)),
-          # further_info = toString(unique(further_info)),
-          # recipient = toString(unique(recipient)), # not too relevant?
-          # industry = toString(unique(industry)), # only available for 2020
-          # accounting_year = toString(unique(accounting_year)),# filter for accounting_year = cdp_year?
-          # sector = toString(unique(sector)), # only available for 2020
-          # questionnaire_sector = toString(unique(questionnaire_sector)), # only available for 2020
-          # further_info = toString(unique(further_info)),
           .by = c(year, `account no`) #, name
   )
 
 # # for this one, remove NA, and , NA -- handled this above in safe_to_string
 # # thank you gpt4.o
 # # Define a function to clean the strings
-# clean_na <- function(x) {
 #     # Remove "NA, " and " , NA"
-#     x <- gsub("NA, |, NA", "", x)
 #     # Optionally, remove any leading or trailing commas or spaces
-#     x <- trimws(gsub("^, |, $", "", x))
 #     return(x)
-# }
-# 
 # # Apply the function to all character columns in the data frame
-# cdp_targets_cleaned <- cdp_targets %>%
-#     mutate(across(where(is.character), clean_na))
 
 write.csv(cdp_targets, "preprocessed_data/cdp_targets_v2.csv", row.names=FALSE)
 cdp_targets <- read_csv("preprocessed_data/cdp_targets_v2.csv", col_names = TRUE) 
@@ -780,22 +723,10 @@ cdp_targets <- read_csv("preprocessed_data/cdp_targets_v2.csv", col_names = TRUE
 folder_path <- "preprocessed_data/cdp_data_sheets/"
 
 # HOW I DID IT THE FIRST TIME:
-# filenames <- list.files(folder_path)
-# pattern <- "2010.*18|2010.*19|2010.*10|2010.*12|2010.*13|2013.*12|2013.*8|2012.*13|2012.*8|2011.*13|2011.*8"
 # # 2018-2020 "2018.*C7|2019.*C7|2020.*C7|2018.*C6|2019.*C6|2020.*C6" 7.9, 7.9a, 6.1, 6.3, 6.4, 6.4a
 # # 2017-2014 "201.*CC12|201.*CC8"
 # # 2010-2013 "2010.*19|2010.*10|2010.*12|2010.*13|2013.*12|2013.*8|2012.*13|2012.*8|2011.*13|2011.*8"
-# matching_files <- grep(pattern, filenames, value = TRUE, ignore.case = TRUE)
-# # files14to17 <- matching_files[c(105, 104, 103, 97, 96, 94, 93, 89, 88, 82, 81, 80, 77, 73, 72, 66, 65, 62, 58, 57, 51, 50, 47, 46, 40, 39, 37, 34, 33, 27, 26, 25, 21, 20, 14, 13, 9, 8, 2, 1)] # how to handle accounting year...
-# # files18to20 <- matching_files[c(131, 141, 123, 124, 127, 128, 110, 100, 98, 97, 94, 93, 82, 72, 69, 68,65, 64, 51, 41, 39, 38, 35, 34, 23, 13, 10, 9, 6, 5)]
-# # files10to13 <- matching_files[c(40, 42,49, 50,51,58,64,91,101,105,113,118,119,157,165,169,170,171,225,226,232,233,256,257,258,265,271,274,275,281,289,294,295,309,313,321,326,327,342,343,347,348,354,355,369,370)]
-# 
-# filelist <- c(files10to13, files14to17, files18to20)
-# 
 # # https://www.statology.org/r-export-list-to-file/
-# sink('preprocessed_data/filelist.txt')
-# print(filelist)
-# sink() #close external connection to file 
 
 # Read it back in https://stackoverflow.com/questions/8933999/reading-a-text-file-with-an-irregular-header-in-r
 filelist_perm <- read.table("preprocessed_data/cdp_emissions_filelist_PERMANENT.txt", skip=6)["V2"]
@@ -811,7 +742,6 @@ verification_file_additions <- grep("2010.*20.1A|2010.*Emissions.*12|2010.*Emiss
 # 2015 investor has 8.1, 2015 SC has 8. Emissions Data
 
 filelist <- unique(c(filelist_perm$V2, verification_file_additions))
-# filelist <-  "Supply Chain CDP CC 2015_Public Data_sheet35_CC8. Emissions Data.csv" # "Supply Chain CDP CC 2017_Public Data_sheet43_CC8.3a.csv" #"Investor CDP 2012_Public Data_sheet30_Emissions 8.csv"
 
 processed_data <- list()
 for (file in filelist) {
@@ -1079,7 +1009,6 @@ for (file in filelist) {
   
 } # 1:36-
 
-
  
 processed_data_emissions <- lapply(processed_data, function(df) {
   numeric_cols <- sapply(df, is.numeric)
@@ -1099,11 +1028,9 @@ View(merged_data_emissions[(merged_data_emissions$`account no` == "21320") & (me
 # runs on all the merged data incl. non-consolidated columns!
 # emissions are coalesced, so even if the other one extracted later has NA for S1, the first reported one will appear
 clean_emissions <- clean_and_coalesce(merged_data_emissions) # %>% # [,colnames(cdp_emissions)[c(1:3,26:32)]]
-  #mutate(across(everything(), clean_na)) # replace any answered "NA" with "Not Answered" so we can eliminate NA's and repetition in safe_to_string
 #3:51-3:52 takes a long time because this is for all the merged columns, not just the chosen ones!
 
 View(clean_emissions[(clean_emissions$`account no` == "21320") & (clean_emissions$year == 2013), c("account no", "name", "year", "filename",  "verification_quality", "verification_standard")])
-
 
 cdp_emissions <- clean_emissions %>%
   distinct(name, year, scope1, scope1_which_year, scope2, scope2_loc, scope2_market, scope2_which_year, scope3, scope3_which_category, .keep_all = TRUE) %>%
@@ -1114,7 +1041,6 @@ cdp_emissions <- clean_emissions %>%
           cdp_primary_expansion = safe_to_string((`primary expansion`)),
           cdp_secondary_expansions = safe_to_string((`secondary expansions`)),
           cdp_country = safe_to_string((country)),
-          #public = safe_to_string((public)),
           cdp_authority_types = safe_to_string((`authority types`)),
           cdp_filename = safe_to_string((filename)),
           cdp_complexity = safe_to_string((complexity)), 
@@ -1211,15 +1137,9 @@ verif_cols <- c("cdp_verification_s1_quality", "cdp_verification_s1_standard", "
                 "cdp_verification_s2_quality", "cdp_verification_s2_standard", "cdp_verification_s2_percent") #"cdp_verification_quality", "cdp_verification_standard",
 change_cols <- c("cdp_change_reason", "cdp_change_dir", "cdp_change_detail", "cdp_change_%", "cdp_change_mtco2e", "cdp_excluded_sources", "cdp_excluded_reason")
 View(cdp_emissions[cdp_emissions$`account no` == "943", c(info_cols, emis_cols)] %>% filter(!is.na(year))) # idk why year NA still gets added to each company..)) # 943 = ARKEMA, 285 = 3M COMPANY, 21318 = ACCENTURE
-# View(cdp_emissions[cdp_emissions$`account no` == "8800",c(info_cols,emis_cols)] %>% filter(!is.na(year))) # idk why year NA still gets added to each company..) # 943 = ARKEMA, 285 = 3M COMPANY
-# View(cdp_emissions[cdp_emissions$`account no` == "285",c(info_cols,emis_cols)] %>% filter(!is.na(year))) # idk why year NA still gets added to each company..) # 943 = ARKEMA, 285 = 3M COMPANY
-
 
 # SAVE TO CSV
 write.csv(cdp_emissions,"preprocessed_data/cdp_emissions_v2.csv", row.names=FALSE)
-# cdp_emissions_v2 <- read.csv("preprocessed_data/cdp_emissions_v2.csv", check.names = FALSE)
-
-
 
 # VERIFICATION CDP DATASET TO MERGE
 
@@ -1276,7 +1196,6 @@ cdp_verification <- clean_emissions %>%
           .by = c(year, `account no`)  # , name just account no... not name in case
   )  # 35,613 unlimited countries!
 
-
 info_cols <- c("account no", "cdp_name", "year", "cdp_primary_industry", "cdp_filename")
 emis_cols <- c("cdp_scope12_boundary", "cdp_reporting_year_coverage", 'cdp_scope1','cdp_scope2','cdp_scope2_loc','cdp_scope2_market','cdp_scope3_upstream', 'cdp_scope3_downstream')
 verif_cols <- c("cdp_verification_s1_quality", "cdp_verification_s1_standard", "cdp_verification_s1_percent", 
@@ -1285,27 +1204,11 @@ verif_cols <- c("cdp_verification_s1_quality", "cdp_verification_s1_standard", "
 change_cols <- c("cdp_change_reason", "cdp_change_dir", "cdp_change_detail", "cdp_change_%", "cdp_change_mtco2e", "cdp_excluded_sources", "cdp_excluded_reason")
 View(cdp_verification[cdp_verification$`account no` == "21320",c(info_cols,verif_cols, change_cols)] %>% filter(!is.na(year))) # idk why year NA still gets added to each company..)) # 943 = ARKEMA, 285 = 3M COMPANY, 21318 = ACCENTURE
 
-# View(cdp_emissions[cdp_emissions$`account no` == "8800",c(info_cols,emis_cols)] %>% filter(!is.na(year))) # idk why year NA still gets added to each company..) # 943 = ARKEMA, 285 = 3M COMPANY
-# View(cdp_emissions[cdp_emissions$`account no` == "285",c(info_cols,emis_cols)] %>% filter(!is.na(year))) # idk why year NA still gets added to each company..) # 943 = ARKEMA, 285 = 3M COMPANY
-
 write.csv(cdp_verification,"preprocessed_data/cdp_verification.csv", row.names=FALSE)
 
 # check distribution over time
 
-# var_emis_by_year_summary <- cdp_emissions %>% 
-#   ungroup() %>%
-#   reframe(
-#     cdp_scope1 = toString(unique(as.character(cdp_scope1))),
-#     cdp_scope2 = toString(unique(as.character(cdp_scope2))),
-#     cdp_scope2_loc = toString(unique(as.character(cdp_scope2_loc))),
-#     cdp_scope2_market = toString(unique(as.character(cdp_scope2_market))),
 #     .by = c(year))
-# 
-# var_verif_by_year_summary <- cdp_verification %>% ungroup() %>%
-#   reframe(
-#     cdp_verification_s1_quality = toString(unique(cdp_verification_s1_quality)),
-#     cdp_verification_s2_quality = toString(unique(cdp_verification_s2_quality)),
-#     cdp_verification_s2_quality = toString(unique(cdp_verification_s2_quality)), # 2560 primary_tickers; 3260 tickers;
 #     .by = c(year))
 
 ```
@@ -1405,35 +1308,13 @@ cdp <- cdp_summaries %>% # now the NA, NA, NA would be if they were NA across su
     .by = c(year, `account no`) #, name
   ) #40125 of 87 vars to --> 61 vars --> 35724 obs of 62 vars --> 35654 obs of 53 vars without grouping by name
 
-# %>% distinct(`year`,`account no`,.keep_all=TRUE) 
 # collect all names... collect all ISINs
 # 3:55-3:56 
 # 41930... --> 35724
-#filter(!is.na(name)) %>% # there is indeed 1 row of "NA" in Supply Chain CDP CC 2016_Public Data_sheet38_C-CC8
-#cdp_response_received_date_emissions = safe_to_string((response_received_date.x)),
-#cdp_response_received_date_targets = safe_to_string((response_received_date.y)), 
-#cdp_status = safe_to_string((cdp_status)),
-#cdp_samples = safe_to_string((samples)),
-#cdp_bbid = safe_to_string((bbid)),
-#cdp_discloser_id = safe_to_string((`discloser id`)),
-#cdp_primary_expansion = toString(unique(c(primary_expansion.x, primary_expansion.y, `primary expansion`))),
-#cdp_secondary_expansions = toString(unique(c(secondary_expansions.x, secondary_expansions.y, `secondary expansions`))),
-#cdp_authority_types = toString(unique(c(authority_types.x, authority_types.y, `authority types`))),
-#cdp_documents = safe_to_string((documents)),
-#cdp_version = safe_to_string((version)),
-#cdp_complexity = toString(unique(c(complexity.x, complexity.y, complexity))), # SPLIT??
-#cdp_program_name = safe_to_string((`program_name`)), 
-#cdp_project_year = safe_to_string((project_year)),
-#cdp_minimum_tier = safe_to_string((`minimum tier`)),
-#cdp_public = safe_to_string((c(cdp_public.x, cdp_public.y, `cdp_public`))),
-# 
 
 # RERUN BELOW AFTER INITIATIVES
-# write.csv(cdp, "preprocessed_data/cdp_v2.csv")
-# cdp <- read.csv("preprocessed_data/cdp_v2.csv", check.names = FALSE)[,-1]
 
 # might not want to do this in case isin / geography / activity changed... in esg. etc
-# cdp_summary <- cdp_summary %>% group_by(`account no`) %>% arrange(year) %>% fill(isins, countries, activity, .direction = "downup")
 
 ```
 
@@ -1476,10 +1357,8 @@ extract_unique_themes <- function(initiatives) {
 
 # ran once didn't need to run again after doing manual process below
 # Get the main themes # names(theme_counts)
-# main_themes <- extract_unique_themes(cdp$cdp_initiative_type)
 
 # # Output the results
-# View(as.data.frame(main_themes))
 
 cdp <- cdp %>%
   mutate(
@@ -1546,7 +1425,6 @@ cdp <- cdp %>%
   )
 
 # check 
-# unique(cdp$cdp_active_target[is.na(cdp$cdp_active_target_logit)])
 
 cdp <- cdp %>%
   mutate(cdp_ISIN = ifelse(is.na(cdp_primary_isin), gsub(", .*$", "", gsub("NA, ", "", cdp_isin)), cdp_primary_isin)) 
@@ -1559,7 +1437,6 @@ cdp <- cdp %>%
   fill(cdp_ISIN, .direction = "updown") 
 cdp$cdp_ISIN[cdp$cdp_ISIN == "0"] <- NA
 
-
 cdp$cdp_year <- as.numeric(cdp$year) - 1
 
 cdp <- cdp %>% filter(!is.na(`account no`))
@@ -1569,35 +1446,18 @@ cdp <- read.csv("preprocessed_data/cdp_v2.csv", check.names = FALSE)#[,-1]
 
 ```
 
-
 # WRDS merge in R first: this is where we merge with compustat and trucost from WRDS
 ```{r}
 # getting the data: 
 # compustat global > fundamentals annual > search by ISIN company code (from cdp_ISIN) with one code per line .txt > 2009-01 to 2020-12 > consolidated, intl & domestic
 cat(unique(cdp$cdp_ISIN[!is.na(cdp$cdp_ISIN)]), file = "comp_search_isins.txt", sep = "\n")
 # # try searching entire global database? and name matching?
-# compustat_v2_cdp_subset <- read_csv("compustat_v2_cdp_ISIN_search.csv") # don't limit yet because name matching might catch more
-# length(unique(compustat_v2_cdp_subset$gvkey)) # 2073
-# length(unique(compustat_v2_cdp_subset$isin)) # 2073 isins
 
 compustat_v2_comp_whole <- read_csv("compustat_v2_whole_comp_database.csv")
 
 # CHECKED THAT THIS MATCHES (within 2 gvkeys that aren't in cdp) DOWNLOADS ON YEAR BY YEAR BASIS FROM COMPUSTAT WEB BROWSER
 # # load all the compustat df's - I've done this before... dfs[[]]
-# comp_filenames <- grep(dir(getwd()), pattern = "comp.*whole.csv", perl = TRUE)
-# comp_dfs <- list()
-# for (n in 1:length(comp_filenames)) {
-#   comp <- read_csv(dir(getwd())[comp_filenames[n]])
-#   comp_dfs[[n]] <- comp
-# }
-# comp_df <- do.call("rbind", comp_dfs) # about 2k more observations than the first time 2009-01 to 2020-01; now 2009-01 to 2021-01
-# nrow(comp_df[comp_df$fyear %in% 2009:2019,]) #418752 observations in 2009:2019
-# nrow(compustat_v2_comp_whole[compustat_v2_comp_whole$comp_fyear %in% 2009:2019,]) #416961 # that's 1791 new observations that could have cdp matches but how many more gvkeys?
-# length(unique(comp_df$gvkey[comp_df$fyear %in% 2009:2019])) #49,603 gvkeys in that date range
-# length(unique(compustat_v2_comp_whole$comp_gvkey[compustat_v2_comp_whole$comp_fyear %in% 2009:2019])) #49,601 gvkeys in that date range
 # # only 2 gvkeys and they were DANANG BOOK and MANGAL ELECTRONIC. Searched for both names in CDP and no results. So the full compustat download seems to have matched with whatever I was able to download on a year by year basis.
-# 
-# setdiff(unique(comp_df$gvkey[comp_df$fyear %in% 2009:2019]), unique(compustat_v2_comp_whole$comp_gvkey[compustat_v2_comp_whole$comp_fyear %in% 2009:2019]))
 
 length(unique(compustat_v2_comp_whole$gvkey)) # 50651 gvkeys
 length(unique(cdp_plus_wrds$comp_gvkey)) # 2076 gvkeys  in the merge... 
@@ -1611,7 +1471,6 @@ colnames(compustat_v2_comp_whole) <- paste0("comp_", gsub(" ", "_", colnames(com
 colnames(trucost_v2_tru_whole) <- paste0("tru_", gsub(" ", "_", colnames(trucost_v2_tru_whole)))
 
 ```
-
 
 # isin+namematch comp/tru
 ```{r}
@@ -1644,7 +1503,6 @@ clean_names1<- function(names) {
 cdp$cdp_cleaned_names1 <- clean_names1(cdp$cdp_name)
 compustat_v2_comp_whole$comp_name_cleaned <- clean_names1(compustat_v2_comp_whole$comp_conm) # takes more than a minute for so many names! 4M rows
 
-
 library(stringdist)
 # testing matches by country and name
 # smaller_df can be the namematch_df, namematch_df will append column of namematches
@@ -1653,11 +1511,7 @@ library(stringdist)
 # take the smaller df as the one with the search terms to search the pool terms
 
 # # if name has more than 5 characters, get first 2/3 of the name, else, just search for whole thing...
-#     if(nchar(search_term) > 5) {
-#       search_string <- substr(search_term, 1, floor(nchar(search_term)/5*4))
 #     } else{
-#       search_string <- search_term
-#     }
 
 namematch <- function(namematch_df, searched_colname, search_list, pool_list, prefix) {
   
@@ -1684,11 +1538,8 @@ namematch <- function(namematch_df, searched_colname, search_list, pool_list, pr
     }
     
     # only calculate best match if the substr_dist is a match?
-    # if (substr_dist[i] > 0 & !is.na(substr_dist[i]))
     # Logical index for rows where substr_dist > 0 and not NA
-    # idx <- which(substr_dist > 0 & !is.na(substr_dist))
     # # Apply calculation only to those rows
-    # best_match[idx] <- larger_df_name_matches[which.max(sqrt(distances[idx]^2 + (2*substr_dist[idx])^2 + length_sim[idx]^2))]
     best_match <- larger_df_name_matches[which.max(sqrt(distances^2 + (2*substr_dist)^2 + length_sim^2))]
     
     # take any matches and fill up
@@ -1700,7 +1551,6 @@ namematch <- function(namematch_df, searched_colname, search_list, pool_list, pr
   }
   return(namematch_df)
 }
-
 
 # instead of manually going through like I did before... can I set up a system of ISIN, country, industry checks to rule out these matches? would there be any matches made outside of name matches if I used ISIN and year?
 # am I sure that I want account number to be the thing I control for? probably... independently reporting units w their own emissions... 
@@ -1724,7 +1574,6 @@ length(unique(id_by_account$`account no`[!is.na(id_by_account$comp_isin)])) #207
 id_by_account <- separate_rows(id_by_account, cdp_names, sep=",")  %>%
   mutate(cdp_names = str_trim(cdp_names, side = "both"))
 
-
 # names left to match
 # try only name-matching the ones that aren't isin matched... 
 cdp_names_to_match <- (id_by_account$cdp_names[is.na(id_by_account$comp_isin)]) # 9486 some repeated, 9336 none repeated; 27700
@@ -1747,7 +1596,6 @@ cdp_comp_names$sim_score_cdp_whole <- stringsim(cdp_comp_names$cdp_names,
                                                 substring(cdp_comp_names$comp_name_match, 1, nchar(cdp_comp_names$cdp_names)), method = "jw")
 cdp_comp_names$sim_score_comp_whole <- stringsim(cdp_comp_names$comp_name_match, substring(cdp_comp_names$cdp_names, 1, nchar(cdp_comp_names$comp_name_match)), method = "jw")
 
-
 # the comp name search within cdp gives us X more matches
 nrow(cdp_comp_names[(cdp_comp_names$sim_score_cdp_whole == 1) | (cdp_comp_names$sim_score_comp_whole == 1) | (cdp_comp_names$sim_score_jw == 1) , ]) #91.7% match, 8699 out of 9486 rows
 # how many unique account numbers does that cover? 
@@ -1767,10 +1615,8 @@ cdp_comp_names$comp_name_match[cdp_comp_names$cdp_names == "TONGYU"] <- "TONGYU 
 # these were from my original painstaking manual verification process, 125 adds!
 keep_matches <- c("CHENFENG", "THREE STARS", "INNOLIGHT", "HUAFENG", "DONGSHAN PRECISION", "LNP", "RECREATION LTD", "SCHOTT", "KSB AG", "EZCHIP", "HUAQIN", "FARASIS", "PUIG SL", "TRIUNFO", "TEREOS", "HYDSOFT", "LEOCH", "NINGBO JIAYIN", "TEN PAO", "COSLIGHT", "SUNPLUS", "SAAB", "CJ", "SANIFOAM", "TOKIWA", "CAICA", "LEMTECH", "YACHIYO", "TAI PING", "BUPA", "HUASHENG", "ASYMCHEM INC", "ECLERX", "TAITIEN", "LEVI STRAUSS & CO", "INVESCO LTD", "MLP AG", "NEMAK", "MICROTEK", "GESTAMP", "TORM AS", "HAYS AG", "GREENTECH SA", "LAM SOON", "BOTHHAND", "CHAUCER", "TSUZUKI", "KOLMAR", "TRITEC", "TSANN KUEN", "FU YU", "LADBROKES", "RIKEN CORPORATION", "FINLAYS", "PLEXUS", "SUMMIT", "AZTECH", "COMPUCOM", "AL BABTAIN", "INFINIS", "LEDLINK", "AZELIS", "ISOFTSTONE INC", "FRESH EXPRESS INC", "PAPERLINX LTD", "NEUSOFT COLTD", "PTT", "TECHNICOLOR SA", "WYG", "GTL", "IDEAL JACOBS", "ARPADIS", "HANNSTAR USA", "TEAC", "TRADE ME", "FRENCKEN", "GOLDEN POWER", "BIRLA CARBON", "TOKMANNI", "CLAVISTER", "BERTELSMANN", "TAMRON", "METRO GLOBAL", "SMARTLINK LLC", "ANGLIAN WATER", "MANPOWERGROUP", "CUMMINS INC", "AREVA CI", "EAGA", "IFCI", "JOHN LAING", "NCC", "OCE", "SKF", "KTM", "LANNER ELEC", "NEWTECH", "CNLIGHT", "PNE", "PALADINI", "AES TIETE SA", "ATLAS COPCO", "APPLE INC", "PROBIOTEC", "ENGLEWOOD", "LONGWELL", "TANAKA SEIMITSU", "TRISTAR", "CAMARGO CORREA", "WONDER", "COASIA", "WETHERSPOON", "AEGON", "GLAXOSMITHKLINE", "HAVAS", "ING GROUP", "METSO", "REXAM", "SPICE", "SWISS LIFE", "TESCO", "NITCO LLC", "SABAF", "VODAFONE GROUP", "CARNIVAL GROUP")
 
-
 cdp_comp_names$include <- 0
 cdp_comp_names$include[(cdp_comp_names$sim_score_cdp_whole == 1) | (cdp_comp_names$sim_score_comp_whole == 1) | (cdp_comp_names$sim_score_jw == 1) | cdp_comp_names$cdp_names %in% keep_matches | cdp_comp_names$cdp_names %in% c("BLACKROCK", "TECHNIP SA", "TONGYU")] <- 1
-
 
 # add compustat gvkeys to the id_by_account_no dataframe... 
 # but first add to the cdp_comp_names match
@@ -1835,7 +1681,6 @@ gvkey_list <- gvkey_by_account %>%
 account_mergers <- unique(gvkey_list$`account no`[grepl(",", gvkey_list$gvkeys)]) 
 
 # print out names associated with accounts associated with multiple gvkeys... 
-# unique(gvkey_by_account$cdp_names[gvkey_by_account$`account no` %in% account_mergers]) 
 
 # view the overlapping set of account numbers with multiple gvkeys each
 View(gvkey_by_account[gvkey_by_account$`account no`%in% account_mergers,])
@@ -1844,12 +1689,6 @@ View(gvkey_by_account[gvkey_by_account$`account no`%in% account_mergers,])
 View(cdp[cdp$`account no` %in% account_mergers,])
 
 # view the compustat dataset associated with the multiple gvkeys
-# View(compustat_v2_comp_whole[compustat_v2_comp_whole$comp_gvkey %in% c("220474", "222111"),]) 
-# View(compustat_v2_comp_whole[compustat_v2_comp_whole$comp_gvkey %in% c("101605", "234117"),]) 
-# View(compustat_v2_comp_whole[compustat_v2_comp_whole$comp_gvkey %in% c("319145", "114657"),]) 
-# View(compustat_v2_comp_whole[compustat_v2_comp_whole$comp_gvkey %in% c("222642", "203944"),]) 
-# View(compustat_v2_comp_whole[compustat_v2_comp_whole$comp_gvkey %in% c("200485", "318465"),]) 
-
 
 # since these change over time, break down gvkey matches by account number AND year!!!! start w summary table
 id_by_account_yr <- cdp %>% ungroup() %>%
@@ -1885,7 +1724,6 @@ length(unique(id_by_account_yr$comp_gvkey)) #2927! YAYYYYYYY matched out of 2927
 length(unique(gvkey_by_account$comp_gvkey)) #2927! YAYYYYYYY matched out of 2927... 
 
 # write to csv just to save
-# write.csv(id_by_account_yr, "preprocessed_data/cdp_comp_isin_namematch_gvkey.csv", row.names=FALSE)
 
 # cdp_account_no = comp_gvkey (takeaway) = name (describe what happened) 
 # 2870 = 013498 gvkey (choose the active namematched one) = CARNIVAL CORPORATION & PLC 
@@ -2001,17 +1839,13 @@ trucost_v2_tru_whole$tru_fyear_manual <- case_when(
   TRUE ~ as.integer(NA)  # handle any NA or unexpected cases if needed
 )
 
-
 # how many unique cleaned names are there: 11k for cdp, 4.16mil for tru
-# View(cdp[,c("cdp_name", "cdp_cleaned_names1")]) # 11812
-# View(trucost_v2_tru_whole[,c("tru_companyname", "tru_name_cleaned")]) # 1789 names --> trucostv2whole has way more... 4.16Mil names jeeeeeezzzzzz
 
 # low-hanging fruit is just the ones that match gvkey, will merge those separately
 sum(unique(trucost_v2_tru_whole$tru_gvkey[!is.na(trucost_v2_tru_whole$tru_gvkey)]) %in% gvkeys, na.rm=TRUE) # 2574/28759 gvkeys 
 
 # remaining names to match that have blank gvkey in the cdp dataset
 tru_names_to_match <- unique(trucost_v2_tru_whole$tru_name_cleaned[!(trucost_v2_tru_whole$tru_gvkey %in% gvkeys)]) #26k
-# View(tru_names_to_match) #26k
 cdp_names_to_match <- unique(cdp_w_gvkey$cdp_cleaned_names1[is.na(cdp_w_gvkey$comp_gvkey)]) # 8443, which is cheating a bit because I did do a search on the trucost names originally downloaded so that helped!
 
 # search for cdp_names_to_match (smaller vector) in tru_names_to_match (larger vector)
@@ -2080,20 +1914,7 @@ View(gvkey_by_account_tru %>% summarise(tru_names = toString(unique(tru_name_mat
                                         tru_gvkeys = toString(unique(tru_gvkey)),
                                         .by=c("account no")))
 
-
-
-
-
 # go through each one and manually correct the gvkeys
-# View(trucost_v2_tru_whole[trucost_v2_tru_whole$tru_gvkey %in% c("027638", "001356"),]) # fine, consistent and changed over time
-# View(trucost_v2_tru_whole[trucost_v2_tru_whole$tru_gvkey %in% c("015708", "027845"),]) # fine, consistent and changed over time
-# View(trucost_v2_tru_whole[trucost_v2_tru_whole$tru_gvkey %in% c("028555", "020315"),]) # fine, consistent and changed over time
-# View(trucost_v2_tru_whole[trucost_v2_tru_whole$tru_gvkey %in% c("179700", "028877"),]) # fine, consistent and changed over time
-# View(trucost_v2_tru_whole[trucost_v2_tru_whole$tru_gvkey %in% c("025389", "008124"),]) # change, below
-# View(trucost_v2_tru_whole[trucost_v2_tru_whole$tru_gvkey %in% c("006268", "010787"),]) # change, below
-# View(trucost_v2_tru_whole[trucost_v2_tru_whole$tru_gvkey %in% c("020692", "006433"),]) # change, below
-# View(trucost_v2_tru_whole[trucost_v2_tru_whole$tru_gvkey %in% c("151282", "014517"),]) # fine, consistent and changed over time
-
 
 # manual changes
 gvkey_by_account_tru$tru_gvkey[gvkey_by_account_tru$`account no` == 7631] <- "008124" # graphics packaging international (the private company, not the public holding company)
@@ -2109,11 +1930,9 @@ trucost_v2_tru_whole$tru_gvkey[trucost_v2_tru_whole$tru_name_cleaned == "DAIKEN 
 
 # for some reason SHOWA didn't show up in the gvkey_by_account_tru, but it is in cdp and does have a trucost match... 
 # wait, that's because we got the gvkey match from compustat? yes
-# cdp$comp_gvkey[cdp$cdp_cleaned_names1 == "SHOWA CORP"] <- "208030" # got gvkey from compustat. it's only 1yr data
 
 # now add gvkey info to the cdp_comp dataset... or the cdp dataset, see if any of those gvkeys are in compustat???
 # fill in with the non-na tru_gvkeys
-# cdp_w_gvkey_tru <- cdp_w_gvkey %>% merge(gvkey_by_account_tru[,c("account no", "cdp_year", "tru_gvkey")], by.x = c("account no", "cdp_year", "comp_gvkey"), by.y = c("account no", "cdp_year", "tru_gvkey"), all=TRUE) # will it just fill in the blanks? no, it added 5k rows
 
 cdp_w_gvkey_tru <- cdp_w_gvkey %>% merge(gvkey_by_account_tru[,c("account no", "cdp_year", "tru_gvkey", "tru_institutionid")], by = c("account no", "cdp_year"), all=TRUE) %>% group_by(`account no`) %>% fill(`tru_gvkey`, `tru_institutionid`, .direction='downup') # this just adds another column w the tru_gvkey, then coalesce w comp_gvkey
 
@@ -2134,12 +1953,10 @@ length(unique(cdp_w_gvkey_tru$gvkey_combo)) #3820 --> 3801 just one was overlapp
 # YAY so now we can merge with compustat and trucost!
 gvkeys <- unique(cdp_w_gvkey_tru$gvkey_combo)
 
-
 # CLEAN THE YEARS FIRST!
 
 # 16760 account no SHAFTESBURY and others has NA years in compustat, so need to infer fyear from the comp_datadate!
 compustat_v2_comp_whole$comp_fyear[is.na(compustat_v2_comp_whole$comp_fyear)] <- format(as.Date(compustat_v2_comp_whole$comp_datadate[is.na(compustat_v2_comp_whole$comp_fyear)], format="%m/%d/%y"), "%Y")
-
 
 # handle incorrect compustat fyears using datadates as well
 # manually edit the date by which to merge the tru w comp!
@@ -2153,10 +1970,6 @@ compustat_v2_comp_whole$comp_fyear_manual <- case_when(
 )
 
 #verify
-# compustat_v2_comp_whole %>%
-#   filter(comp_fyear_manual != comp_fyear) %>%
-#   select(comp_gvkey, comp_datadate, comp_fyear_manual, comp_fyear) %>%
-#   View()
 
 # how much data for cdp respondents do we lose out on if we only take period-end-date of dec year
 trucost_v2_tru_whole$tru_month <- format(as.Date(trucost_v2_tru_whole$tru_periodenddate, format="%Y-%m-%d"), "%m")
@@ -2169,10 +1982,7 @@ cdp_comp <- merge(cdp_w_gvkey_tru,
                   by.y = c("comp_gvkey", "comp_fyear_manual"), # so comp_fyear_manual turned into cdp_year
                   all.x=TRUE) # 546 with all to 118 with just cdp
 
-# cdp_tru <- merge(cdp_w_gvkey_tru,
 #                  trucost_v2_tru_whole,
-#                  by.x = c("gvkey_combo", "cdp_year", "tru_institutionid"), 
-#                  by.y = c("tru_gvkey", "tru_fyear_manual", "tru_institutionid"),
 #                  all=TRUE) # 493314
 
 # Merge by year and gvkey
@@ -2195,7 +2005,6 @@ cdp_other <- cdp_w_gvkey_tru[is.na(cdp_w_gvkey_tru$tru_gvkey)|
 # Stack and deduplicate, e.g. (you may need to select/arrange columns as needed)
 cdp_tru <- bind_rows(cdp_tru_gvkey, cdp_tru_instid, cdp_other) %>% distinct() # 145370 obs
 
-
 # add compustat, comp_gvkey becomes gvkey_combo
 cdp_tru_comp <- merge(cdp_tru %>% select(-c("comp_gvkey")), 
                       compustat_v2_comp_whole,
@@ -2204,8 +2013,6 @@ cdp_tru_comp <- merge(cdp_tru %>% select(-c("comp_gvkey")),
                       all.x=TRUE) # 145483!
 
 write.csv(cdp_tru_comp, "preprocessed_data/cdp_tru_comp.csv", row.names=FALSE)
-
-
 
 # examples of large discrepancies
 tru_cdp_compare <- cdp_tru_comp[!is.na(cdp_tru_comp$cdp_scope1) & cdp_tru_comp$cdp_scope1 > 0 &
@@ -2222,7 +2029,6 @@ nrow(cdp_tru_comp[is.na(cdp_tru_comp$cdp_scope1)|cdp_tru_comp$cdp_scope1 == 0 & 
 nrow(cdp_tru_comp[!is.na(cdp_tru_comp$tru_scope1_absolute),]) # 8689 rows have trucost scope 1 absolute emissions reported or adjusted (however they do it) 15% of those add additional value to the cdp data, 125,542 w Trucost other, 125,557 after fyear_manual fix, 30744 within cdp cohort
 nrow(cdp_tru_comp[!is.na(cdp_tru_comp$cdp_scope1) & cdp_tru_comp$cdp_scope1> 0 & !is.na(cdp_tru_comp$tru_scope1_absolute),]) # 8689 rows have trucost scope 1 absolute emissions reported or adjusted (however they do it) # 13,901 w Trucost overlap and cdp, back down to 13912 with fyear_manual fix, 15635 are nonzero 
 
-
 # Count NaN values in each column using dplyr
 nan_counts_dplyr <- cdp_tru_comp %>%
   ungroup() %>%
@@ -2230,88 +2036,6 @@ nan_counts_dplyr <- cdp_tru_comp %>%
   summarise(across(everything(), ~(1-sum(is.na(.))/n()))) # non-NA values actually!
 print(nan_counts_dplyr)
 
-
-```
-
-# deleted cdp_comp_tru need to reconsider matching comp and tru names and gvkeys
-```{r}
-
-
-# DON"T NEED TO EXPAND COMPUSTAT AND TRUCOST. THEY ONLY HAVE WHATEVER DATA THEY HAVE!
-
-# # expand compustat and trucost before merging -- by their nonNA identifiers! comp_gvkey, tru_institutionid
-# compustat_v2_comp_whole_expanded <- compustat_v2_comp_whole %>%
-#   tidyr::expand(`comp_gvkey`, comp_fyear_manual = 2009:2019) %>%
-#   left_join(compustat_v2_comp_whole, by = c("comp_gvkey", "comp_fyear_manual")) 
-
-
-# DON"T DO THIS TAKES TOO LONG AND DON"T NEED TO MAKE COMP_TRU FIRST
-# JUST MERGE CDP_COMP then CDP_COMP_TRU w TRU_INSTITUTIONID!# 
-# trucost_v2_tru_whole_expanded <- trucost_v2_tru_whole %>%
-#   tidyr::expand(`tru_institutionid`, tru_fyear_manual = 2009:2019) %>%
-#   left_join(trucost_v2_tru_whole, by = c("tru_institutionid", "tru_fyear_manual")) %>% 
-#   group_by(tru_institutionid) %>% fill("tru_gvkey", "tru_companyname", "tru_companytype", "tru_status", "tru_simpleindustry", "tru_incorporation_country", "tru_country", "tru_yearfounded", "tru_institutionid", "tru_name_cleaned", .direction='downup') # I hope this doesn't crash the kernel :||| 16million rows... 
-
-
-# # first merge compustat and trucost (but this only has nonNA gvkeys.... )
-# comp_tru <- merge(compustat_v2_comp_whole[!is.na(compustat_v2_comp_whole$comp_gvkey),], 
-#                   trucost_v2_tru_whole[!is.na(trucost_v2_tru_whole$tru_gvkey),], 
-#                   # & trucost_v2_tru_whole$tru_gvkey %in% gvkeys doesn't have to be if there's a comp_tru match
-#                   by.x = c("comp_gvkey", "comp_fyear_manual"), by.y = c("tru_gvkey", "tru_fyear_manual"), all=TRUE) 
-# # 493314 obs of 61 vars across all gvkey matches when updated to tru_fyear_manual from tru_fiscalyear and comp_fyear_manual
-# # 496969 obs of 57 vars across all gvkey matches
-# # 41112 obs %in% gvkeys, 3819 gvkeys only with trucost gvkey matches, didn't name-match compustat and trucost... 
-# # jeezessesseses more workbut good work... eek
-# # 23,391 rows with overlapping data... this should carry over when merging with cdp_w_gvkey_tru
-# 
-# # save compustat-trucost merge as csv
-# write.csv(comp_tru, "preprocessed_data/comp_tru.csv", row.names=FALSE)
-
-# View(comp_tru[!is.na(comp_tru$comp_datadate) & !is.na(comp_tru$tru_periodenddate),c("comp_gvkey", "comp_datadate", "tru_periodenddate", "comp_fyear", "comp_month", "tru_month")])
-
-# # check if companies usually submit around same time to their financial and emissions data providers
-# View(comp_tru[!is.na(comp_tru$comp_datadate) & !is.na(comp_tru$tru_periodenddate),c("comp_gvkey", "comp_datadate", "tru_periodenddate")])
-
-# # # merge cdp w COMPUSTAT to see how many rows actually have data
-# # cdp_comp_tru <- merge(cdp_w_gvkey_tru, 
-# #                       comp_tru, 
-# #                       by.x = c("gvkey_combo", "cdp_year"), 
-# #                       by.y = c("comp_gvkey", "comp_fyear_manual"), # so comp_fyear_manual turned into cdp_year
-# #                       all=TRUE) 
-# # 510729 observations of 130 vars in or not in gvkeys # additional bc of the fyear manual!
-# # 514385 obs of 125 vars in or not in gvkeys # same 3839 non-NA account no's with gvkeys
-# # 58528 obs, 3819 non-NA gvkeys in gvkeys... and 3839 non-NA account no's with gvkeys
-# # there's NA year
-# 
-# # after fixing missing year and merging all gvkeys in comp & tru, 12439 rows have compustat and trucost names assoc w cdp account no!
-# 
-# nrow(cdp_comp_tru[!is.na(cdp_comp_tru$cdp_scope1) & !is.na(cdp_comp_tru$tru_scope1_absolute),]) # 7239 --> 7351 rows now with cdp + tru emis added 112 rows with trucost data from namematch --> now up to 10,575 rows!!!!! WOOOOOOHOOOOOOO --> now up to 13,901! amazing. --> back down to 13912 with fyear_manual
-# nrow(cdp_comp_tru[!is.na(cdp_comp_tru$cdp_scope1) & !is.na(cdp_comp_tru$tru_scope1_absolute) & !is.na(cdp_comp_tru$comp_revt),]) # 7324 have cdp + comp + tru, now up to 8785 rows, now up to 10,479 with improved name-match algorithm!, 10,487 with fyear_manual
-# 
-# nrow(cdp_comp_tru[!is.na(cdp_comp_tru$comp_revt)|!is.na(cdp_comp_tru$tru_revt),]) # 14442 out of 35674 rows --> now 28529 / 49761 more than half by keeping all = TRUE. now 496,036 rows with comp/tru revt, 492377 with fixed fyear_manual comp/tru revt.
-# 
-# nrow(cdp_comp_tru[is.na(cdp_comp_tru$cdp_scope1) & !is.na(cdp_comp_tru$cdp_filename) & !is.na(cdp_comp_tru$tru_scope1_absolute),]) # 2127 additional rows of scope 1 data... where cdp_filename is missing. I want to know how trucost got this extra emissions data, now 2377 rows, to 2395 after fyear_manual fix
-# 
-# # first, check if there are any multiple account numbers per GVKEY... if so it will be hard to just ffill, bfill the account numbers
-# account_no_by_gvkey <- cdp_comp_tru[!is.na(cdp_comp_tru$gvkey_combo),] %>%
-#   summarise(account_nos = toString(unique(`account no`[!is.na(`account no`)])),
-#             .by = gvkey_combo)
-# # yes. 146 have some sort of subsidiary relationship... --> now only 46 have multiple account numbers associated with the same gvkey
-# 
-# # 31 account numbers have multiple gvkeys... this is also troubling. cdp's CENTERRA GOLD --> CENTERRA GOLD INC got matched with AVIVA PLC. How?
-# gvkey_by_account_no <- cdp_comp_tru[!is.na(cdp_comp_tru$`account no`),] %>%
-#   summarise(gvkeys = toString(unique(gvkey_combo[!is.na(gvkey_combo)])),
-#             .by = `account no`)
-# 
-# write.csv(cdp_comp_tru, "preprocessed_data/cdp_comp_tru.csv", row.names=FALSE) # 7 more rows than before (e.g., cdp_plus_wrds dataset), and 8 more variables than before, but with confidence that I (1) searched the entire compustat and trucost databases between 2009-2020, (2) matched ISINS, GVKEYS, AND NAMES to the best of my ability, even through manual verification, and (3) PROPERLY matched ISINS and NAMES, and PROPERLY constructed dataset from ground up: cdp components, then searching comp_isins within cdp_isins, getting gvkey, matching comp_names by searching for cdp_name snippets in comp_conml, then matching trucost remaining gvkey/names using name-search of tru_name(cleanedv2 - clearing up PLC, LTD, AS, AG, etc.) in cdp_name(cleanedv2 "clean_names1") then adding a gvkey col to cdp: comp_gvkey, and using it to merge comp, then trucost by gvkey AND fiscal year.
-# # now we save all 500k rows because of compustat and trucost gvkeys and "non-CDP" company information, so what sets cdp respondents apart from other companies... 
-# # to merge with Orbis, will need to fill in the ISINs
-
-
-# # wait, where's the NA year coming from again!? fixed. it was because I forgot to update the comp_fyear_manual when merging with cdp_w_gvkey_tru
-# sum(is.na(cdp_tru_comp$cdp_year)) #35392??
-# View(cdp_tru_comp[is.na(cdp_tru_comp$cdp_year),])
-# unique(cdp_tru_comp$gvkey_combo[is.na(cdp_tru_comp$cdp_year)])
 ```
 
 # adding BERT handling respondent type and datadate
@@ -2331,7 +2055,6 @@ cdp_tru_comp_bert <- cdp_tru_comp_bert %>%
 
 View(cdp_tru_comp_bert[,c("account no", "cdp_year", "fmt_cdp_submitted_date", "fmt_tru_periodenddate", "cdp_scope1", "tru_scope1_absolute")]) # "cdp_submitted_date", comp_datadate", "tru_periodenddate", "fmt_cdp_submitted_date", "fmt_comp_datadate",
 
-
 write.csv(cdp_tru_comp_bert[!is.na(cdp_tru_comp_bert$`account no`),], "preprocessed_data/cdp_tru_comp_bert.csv", row.names=FALSE)
 # for those with multiple respondents, does the rest of the cdp_comp_tru info get filled out? YES!
 ```
@@ -2345,7 +2068,6 @@ miss_var_summary(cdp_tru_comp_bert)
 
 ```
 
-
 # respondent summaries
 ```{r}
 # which ones in which years had both respondents
@@ -2358,7 +2080,6 @@ responded_to_both <- table %>%
 # checked that account number35211 in 2012 had nonmissing cdp information for BOTH inv & sc rows BERT
 
 # so on average, each account has about 1 year where they responded to both survey types....
-# > sum(is.na(cdp_comp_tru_bert$bert_maxcol))
 # [1] 436272
 # total rows minus those where bert is NA = 125873
 # divide by number of unique account numbers 10793 gives 11.66, and there are 11 years of data...
@@ -2377,36 +2098,18 @@ responded_to_both <- table %>%
 # cdp_comp_tru_bert$tru_periodenddate
 # 
 # # # Convert variables to Date if needed
-# cdp_comp_tru_bert <- cdp_comp_tru_bert %>%
-#   mutate(
-#     fmt_cdp_submitted_date = as.Date(cdp_submitted_date),
-#     fmt_comp_datadate = as.Date(comp_datadate, format = "%m/%d/%y"),
-#     fmt_tru_periodenddate = as.Date(tru_periodenddate)
-#   )
 
 # # view date conversions to check
-# View(cdp_comp_tru_bert[,c("account no", "cdp_year", "fmt_cdp_submitted_date", "fmt_tru_periodenddate", "cdp_scope1", "tru_scope1_absolute")]) # "cdp_submitted_date", comp_datadate", "tru_periodenddate", "fmt_cdp_submitted_date", "fmt_comp_datadate", 
-# 
 # # from this I gather that if the month of tru_periodenddate < 6, then look for the best match from next year's periodenddate!, e.g., 2013-03-31 for 2013 is not correct. Should be 2014-03-31 reporting on 2013 values! but we can check this! e.g., scope 1 emissions values!
 
 # 
 # # Gather dates into long format for plotting
-# date_long <- cdp_comp_tru_bert %>%
-#   select(fmt_cdp_submitted_date, fmt_comp_datadate, fmt_tru_periodenddate) %>%
-#   pivot_longer(cols = everything(), 
 #                names_to = "date_type", 
-#                values_to = "date") %>%
-#   filter(!is.na(date))
-# 
 # # Plot histogram with dates as x and fill by date_type
-# ggplot(date_long, aes(x = date, fill = date_type)) +
-#   geom_histogram(position = "identity", alpha = 0.5, bins = 30) +
-#   labs(title = "Timeline Distribution of Dates",
 #        x = "Date",
 #        y = "Count",
 #        fill = "Date Type") +
 #   theme_minimal()
-
 
 ###########################################################################################################
 # other information to fill in
@@ -2432,7 +2135,6 @@ filled_from_comp_or_tru <- cdp_tru_comp_bert %>%
 
 length(filled_from_comp_or_tru) # 20 account numbers (out of 221 with missing country) can be filled with compustat or trucost information. but eventually may need to do a lookup country, industry tool! and when I do, I want to find out the LIST of countries and industries in which the account (specific company subsidiary if applicable) operates.
 
-
 # INDUSTRY
 filled_from_comp_or_tru <- cdp_comp_tru_bert %>%
   filter(
@@ -2455,9 +2157,6 @@ length(missing_cdp_industry) # 8111 account numbers are missing industry informa
 ###########################################################################################################
 # comparing KPIs between investor and supply chain respondent types
 ###########################################################################################################
-
-# hist(cdp_comp_tru_bert$bert_netzero_reduction_label_reduction_sum[cdp_comp_tru_bert$bert_respondent == "investor"])
-# hist(cdp_comp_tru_bert$bert_netzero_reduction_label_reduction_sum[cdp_comp_tru_bert$bert_respondent == "supply_chain"])
 
 # thanks perplexity gpt
 plot_grouped_histograms <- function(df, var) {
@@ -2487,15 +2186,8 @@ kpi_vars <- Filter(function(x) is.numeric(base_KPI_labels_v3[[x]]), kpi_vars)
 # run on all kpi_vars
 lapply(kpi_vars, function(var) print(plot_grouped_histograms(base_KPI_labels_v3, var)))
 
-
 # summarize number of accounts and mean KPIs by respondent/year
-# View(
-# kpi_by_respondent_type <- base_KPI_labels_v3 %>%
-#   summarise(
-#     n_accounts = n_distinct(bert_account_no),
-#     across(where(is.numeric), ~mean(.x, na.rm = TRUE), .names = "mean_{col}"),
 #     .by = c(bert_respondent)
-#   ))
 
 # in 2019, only 875 account no's responded to both inv & sc... 
 
@@ -2557,11 +2249,6 @@ plot_histogram_differences <- function(df, var) {
 kpi_vars <- unique(differences_df$variable)
 lapply(kpi_vars, function(var) print(plot_histogram_differences(differences_df, var)))
 
-
-# table %>%
-#   filter(grepl(",", respondents)) %>%
-#   summarise(n_accounts = n_distinct(bert_account_no), .by = bert_year)
-
 # what's the respondent breakdown over time
 respondent_breakdown <- table %>%
   mutate(
@@ -2574,7 +2261,6 @@ respondent_breakdown <- table %>%
     )
   ) %>%
   summarise(n_accounts = n_distinct(bert_account_no), .by = c(bert_year, respondent_type))
-
 
 # visualize the respondent breakdown over time 
 # save as pdf
@@ -2645,7 +2331,6 @@ p_loc <- gg_miss_upset(visualize %>% select(all_of(c(cdp_loc_vars, comp_loc_vars
 
 p_ind <- gg_miss_upset(visualize %>% select(all_of(c(cdp_ind_vars, comp_ind_vars, tru_ind_vars))), 
                             nsets = length(c(cdp_ind_vars, comp_ind_vars, tru_ind_vars)))
-
 
 p_name <- gg_miss_upset(visualize %>% 
                           select(all_of(c(cdp_name_vars, comp_name_vars, tru_name_vars))),
@@ -2760,14 +2445,12 @@ categorize_industry <- function(industry) {
 cdp_bert_ticker <- cdp_bert_ticker %>%
   mutate(industry_category = sapply(`cleaned_industry`, categorize_industry))
 
-
 industry_categories <- cdp_bert_ticker %>%
   ungroup() %>%
   reframe(sub_cleaned_industries = toString(unique(`cleaned_industry`)),
           company_names = toString(unique(`name`)),
           .by = c(`year`, `industry_category`)) %>%
   arrange(`industry_category`)
-
 
 ```
 
@@ -2840,11 +2523,8 @@ View(data.frame(cdp_bert_ticker$`account no`, cdp_bert_ticker$cleaned_country,
                 cdp_bert_ticker$region_assign, cdp_bert_ticker$region_assign3) %>%
        distinct(cdp_bert_ticker$`account no`, .keep_all=TRUE))
 
-
-
 cdp_bert_ticker$region_assign[cdp_bert_ticker$region_assign == "Unknown"] <- NA
 cdp_bert_ticker$region_assign3[cdp_bert_ticker$region_assign3 == "Unknown"] <- NA
-
 
 cdp_bert_ticker <- cdp_bert_ticker %>%
   arrange(`account no`, `year`) %>%
@@ -2868,7 +2548,6 @@ View(merge(cdp_bert_ticker[, c("account no", "year", "region_assign")], cdp_bert
 write.csv(cdp_bert_ticker, "preprocessed_data/cdp_bert_ticker.csv", row.names = FALSE)
 cdp_bert_ticker <- read_csv("preprocessed_data/cdp_bert_ticker.csv")
 
-
 ### FOR UPLOADING TO ORBIS (adding a regionassign3 column)
 merged_df <- merge(multinom_test2, cdp_bert_ticker[, c("account no", "region_assign3")] %>% distinct(`account no`, .keep_all=TRUE), 
                    by = "account no", all.x = TRUE)
@@ -2884,7 +2563,6 @@ merged_vf$verified_s1 <- 1
 merged_vf$verified_s2 <- 1
 merged_vf$verified_s3 <- 1
 
-
 # works only to 0 them out
 merged_vf$verified_s1[merged_vf$year == 2020 & (is.na(merged_vf$external_verification_s1)|merged_vf$external_verification_s1 %in% c("0.0", "Question not applicable", "Not verified"))] <- 0
 merged_vf$verified_s1[merged_vf$year %in% c(2018:2019) & (is.na(merged_vf$external_verification_scope)|merged_vf$external_verification_scope == "Hidden Answer"|!grepl("scope 1", paste(merged_vf$external_verification_scope), ignore.case = TRUE))] <- 0
@@ -2899,7 +2577,6 @@ merged_vf$verified_s2[merged_vf$year %in% c(2010:2017) &  (is.na(merged_vf$exter
 merged_vf$verified_s3[(is.na(merged_vf$external_verification_s3)|(merged_vf$external_verification_s3 %in% c("Question not applicable", "Not verified")))] <- 0
 
 View(merged_vf[, c("account no", "year", colnames(merged_vf)[grepl("verif", colnames(merged_vf))])])
-
 
 variable_by_year_summary1 <- merged_vf %>% 
   ungroup() %>%
@@ -2918,7 +2595,6 @@ variable_by_year_summary1 <- merged_vf %>%
           external_verification_s2 = toString(unique(external_verification_s2)),
           external_verification_s3 = toString(unique(external_verification_s3)), # 2560 primary_tickers; 3260 tickers;
           .by = c(year))
-
 
 write.csv(merged_vf, "preprocessed_data/merged_vf.csv", row.names=FALSE)
        
@@ -2960,7 +2636,6 @@ ggplot(data = summary_stats, mapping = aes(x = factor(year), y = log(mean_s1), f
         axis.title.y = element_text(size = 13),
         axis.text.x = element_text(size = 13, angle = 90, hjust =1))
 
-
 ggplot(data = summary_stats, aes(x = factor(year), y = log(mean_s2), fill = region_assign3, group = region_assign3)) +
   facet_wrap(~region_assign3) + 
   geom_line(aes(color = region_assign3), size = 1.2) + # Line plot for the mean, grouped by region
@@ -2982,8 +2657,6 @@ ggplot(data = summary_stats, aes(x = factor(year), y = log(mean_s2), fill = regi
         axis.title.y = element_text(size = 13),
         axis.text.x = element_text(size = 13, angle = 90, hjust =1)) +
   scale_x_discrete(breaks = seq(2010, 2020, by = 2))
-
-
 
 # this is making me think that there's a systematic data error. maybe the question for verification of s1/s2 changed and I didn't merge it properly!!!!
 # fixed... 6 hours later UGH!
@@ -3011,8 +2684,6 @@ lagged_set <- summary_stats %>%
          growth_active_target = (nextyr_mean_active_target - mean_active_target)/mean_active_target)
   
 
-
-
 ggplot(data = lagged_set[lagged_set$region_assign3 %in% c("Europe", "Asia", "North America", "South America", "Africa", "Middle East"),], aes(x = factor(year), y = growth_s2, fill = region_assign3, group = region_assign3)) +
   facet_wrap(~region_assign3) + 
   geom_line(aes(color = region_assign3), size = 1.2) + # Line plot for the mean, grouped by region
@@ -3034,8 +2705,6 @@ ggplot(data = lagged_set[lagged_set$region_assign3 %in% c("Europe", "Asia", "Nor
         axis.title.y = element_text(size = 13),
         axis.text.x = element_text(size = 13, angle = 90, hjust =1)) +
   scale_x_discrete(breaks = seq(2010, 2020, by = 2)) #+ 
-  # scale_y_continuous(breaks = seq(-2, 2, by=1))
-
 
 # regressions with growth rate in emissions as the only dependent, and commitment/active target as the only independent
 model1 <- glm(scale(growth_s1) ~ scale(growth_active_target), data = lagged_set[!is.infinite(lagged_set$growth_s1) & !is.na(lagged_set$growth_s1) & 
@@ -3049,21 +2718,17 @@ model1 <- glm(scale(growth_s1) ~ scale(growth_active_target), data = lagged_set[
 
 summary(model1)
 
-
 # regressions with growth rate in emissions as the only dependent, and commitment/active target as the only independent
 model1 <- glm(scale(growth_s1) ~ scale(growth_active_target), data = lagged_set[!is.infinite(lagged_set$growth_s1) & !is.na(lagged_set$growth_s1) & 
                                                                                   !is.infinite(lagged_set$growth_active_target) & !is.na(lagged_set$growth_active_target) & lagged_set$region_assign3 %in% ("Europe"),] %>% ungroup(), family= gaussian())
 
 summary(model1)
 
-
-
 # regressions with growth rate in emissions as the only dependent, and commitment/active target as the only independent
 model1 <- glm(scale(growth_s1) ~ scale(growth_active_target), data = lagged_set[!is.infinite(lagged_set$growth_s1) & !is.na(lagged_set$growth_s1) & 
                                                                                   !is.infinite(lagged_set$growth_active_target) & !is.na(lagged_set$growth_active_target) & lagged_set$region_assign3 %in% ("Asia"),] %>% ungroup(), family= gaussian())
 
 summary(model1)
-
 
 ```
 
@@ -3079,9 +2744,7 @@ compustat_counts <- crsp_test %>%
     capital_expenditures = n_distinct(tic[!is.na(as.numeric(capx))]),
     acquisitions = n_distinct(tic[!is.na(as.numeric(aqc))]),
     current_assets_discontinued = n_distinct(tic[!is.na(as.numeric(acdo))]),
-    #acquisitions_sales_contribution = n_distinct(tic[!is.na(as.numeric(acqsc))]),
     employees = n_distinct(tic[!is.na(as.numeric(emp))]),
-    #contingent_liabilities = n_distinct(tic[!is.na(as.numeric(clt))]),
     total_liabilities = n_distinct(tic[!is.na(as.numeric(lt))]),
     common_shares_outstd = n_distinct(tic[!is.na(as.numeric(csho))]),
     price_close_annual_fiscal = n_distinct(tic[!is.na(as.numeric(prcc_f))]),
@@ -3089,7 +2752,6 @@ compustat_counts <- crsp_test %>%
     property_plant_equipment_total = n_distinct(tic[!is.na(as.numeric(ppent))]),
     invested_capital = n_distinct(tic[!is.na((icapt))]),
     intangible_assets = n_distinct(tic[!is.na((intan))]),
-    #staff_expense = n_distinct(tic[!is.na((xstfws))]),
     status = n_distinct(tic[!is.na((costat))]),
     market_value = n_distinct(tic[!is.na((mkvalt))]),
     gic_industries = n_distinct(tic[!is.na((gind))]),
@@ -3102,20 +2764,16 @@ compustat_counts <- crsp_test %>%
 # calculate the market cap based on common shares outstanding and closing price... ?
 crsp_test$market_cap_calc <- crsp_test$csho*crsp_test$prcc_f
 
-
 # MERGE CRSP FIRM CONTROLS WITH CDP BERT TICKER
 
 # how did this go down from 35,724 observations to 1,858 observations??? had to all=TRUE, then filter down to is.na account no
 # merge by ticker... 
-# View(merge(crsp_test[,c("fyear", "tic", "mkvalt", "emp", "incorp", "naics", "capx", "at", "ppent")], cdp_bert_ticker[,c("year", "Ticker", "primary_ticker", "name", "account no", "cleaned_country", "region_assign")], by.x = c("fyear", "tic"), by.y = c("year", "Ticker"), all=TRUE) %>% filter(!is.na(`account no`))) 
 
 # Assuming crsp_test and cdp_bert_ticker are your data frames
 merge_test <- merge(cdp_bert_ticker,# [, c("year", "Ticker", "primary_ticker", "name", "cleaned_country", "region_assign")] 
                     crsp_test[crsp_test$indfmt == "INDL", ], # c("fyear", "tic", "mkvalt", "emp", "incorp", "naics", "capx", "at", "ppent")
                      by.y = c("fyear", "tic"),
                      by.x = c("year", "Ticker"), all=TRUE) %>% filter(!is.na(`account no`))
-
-# FLAG THE ONES THAT DON"T MATCH gsub(" US", "", primary_ticker")
 
 # thank you GPT
 # Create the flag column
@@ -3133,10 +2791,6 @@ merge_test <- merge_test %>%
   )
 
 # # View the updated data frame
-# print(merge_test)
-
-# write.csv(merge_test, "preprocessed_data/merge_test.csv", row.names=FALSE)
-# merge_test <- read_csv("preprocessed_data/merge_test.csv")
 
 # Total Assets (at)
 # Current Assets Total (act)
@@ -3162,7 +2816,6 @@ merge_test <- merge_test %>%
 # Current State/Province of Incorporation Code (incorp)
 # North American Industry Classification Code (naics)
 # Inventories - Total (invt)
-
 
 # Property, Plant, and Equipment - Buildings at Cost (fatb)
 # Property, Plant, and Equipment - Construction in Progress at Cost (fatc)
@@ -3196,9 +2849,6 @@ df_trial <- merge_test %>%
   arrange(`account no`, year) %>%  # Ensure data is ordered by 'year'
   group_by(`account no`) %>% # within each account number
   fill(industry_category, .direction = "down")  # Fill industry_category forward
-
-# View(df_trial[,c("name", "year", "industry_category", "industry_category_perplexity")])
-
 
 # CONTINUE FROM HERE... 
 unique(df_trial$name[is.na(df_trial$industry_category)]) #454! 26 entries for perplexity # 376, #347 # 320 # 259 ==> about 10 more perplexity searches at this rate. It's been increasingly stingy with information provision. 
@@ -3263,11 +2913,6 @@ ggplot(long_data, aes(x = recipient_type, y = count, fill = region_assign)) +
   #facet_wrap(~region_assign) +
   theme(axis.text.x = element_text(angle = 80, hjust = 1)) +
   scale_fill_brewer(palette = "Set2") #+
-  # scale_fill_viridis(discrete = TRUE) 
 
 ```
-
-
-
-
 
