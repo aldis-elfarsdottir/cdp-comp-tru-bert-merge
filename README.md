@@ -7,7 +7,7 @@ The Python script documents the extracts performed to collect key BERT variables
 
 If you use this code or methodology, please cite:
 
-> Elfarsdottir, A. (2026). _Corporate Carbon Credibility: Detecting Signals of Credibility in Corporate Carbon Reports using Natural Language Processing_ (Doctoral dissertation). Stanford University. [URL coming soon]
+> Elfarsdottir, A. (2026). _Corporate Carbon Credibility: Detecting Signals of Credibility in Corporate Carbon Reports using Natural Language Processing_ (Doctoral dissertation). Stanford University. https://purl.stanford.edu/fr864tf9302
 
 BibTeX:
 ```bibtex
@@ -17,7 +17,7 @@ BibTeX:
   school = {[Stanford University]},
   year   = {[2026]},
   type   = {PhD dissertation},
-  url    = {[URL available soon]}
+  url    = {[https://purl.stanford.edu/fr864tf9302]}
 }
 ```
 
