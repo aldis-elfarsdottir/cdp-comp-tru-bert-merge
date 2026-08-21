@@ -21,4 +21,4 @@ BibTeX:
 }
 ```
 
-Portions of the codebase (i.e., scaled-up CDP merge, translation, and ClimateBERT preprocessing) were developed by research assistant, Chase Hikida, and are used with permission; see `CH-cdp-bert-pipeline.zip`, from `ChaseHikida/mse`.
+Portions of the codebase (i.e., scaled-up CDP merge, translation, and ClimateBERT preprocessing) were developed by research assistant, Chase Hikida, and are used with permission; see `mse-main`, from `ChaseHikida/mse`.
